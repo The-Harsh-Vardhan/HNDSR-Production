@@ -10,26 +10,45 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    
+    - uses: actions/checkout@v4
+
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        
+
     - name: Lint with flake8
       run: |
-        # stop the build if there are Python syntax errors or undefined names
+        # Fail on syntax errors and undefined names
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-        
+        # Show warnings (no --exit-zero — warnings are visible)
+        flake8 . --count --max-complexity=10 --max-line-length=127 --statistics
+      env:
+        PYTHONPATH: .
+
     - name: Test with pytest
       run: |
-        pytest tests/
+        pytest tests/ -v --tb=short
+      env:
+        PYTHONPATH: .
+
+    - name: Validate YAML configs
+      run: |
+        python -c "import yaml; yaml.safe_load(open('observability/prometheus.yml'))"
+        python -c "import yaml; yaml.safe_load(open('observability/alerting_rules.yml'))"
+        python -c "import yaml; yaml.safe_load(open('docker/docker-compose.yml'))"
+
+    - name: Validate JSON configs
+      run: |
+        python -c "import json; json.load(open('observability/grafana_dashboard.json'))"
+
+    - name: Verify Dockerfile build context
+      run: |
+        # Ensure requirements-prod.txt exists (referenced by Dockerfile)
+        test -f requirements-prod.txt || (echo "MISSING: requirements-prod.txt" && exit 1)

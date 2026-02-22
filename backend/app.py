@@ -4,18 +4,27 @@ backend/app.py
 Production FastAPI application for HNDSR super-resolution inference.
 
 What  : Serves the HNDSR model via HTTP endpoints with health checks,
-        metrics, version info, and inference.
+        Prometheus metrics, version info, and inference.
 Why   : The Jupyter notebook cannot serve production traffic. This app
         provides async request handling, backpressure, and monitoring.
 How   : FastAPI with async endpoints, thread-pool GPU offloading,
-        semaphore-based concurrency control, and Prometheus metrics.
+        semaphore-based concurrency control, and prometheus_client metrics.
 
 Endpoints:
   GET  /health    — Liveness probe (Kubernetes)
   GET  /ready     — Readiness probe (model loaded?)
   POST /infer     — Super-resolution inference
-  GET  /metrics   — Prometheus metrics
+  GET  /metrics   — Prometheus metrics (histogram-based)
   GET  /version   — API and model version info
+
+Post-Audit Fixes (2026-02-22):
+  1. Replaced average latency gauge with Prometheus histogram (P50/P95/P99)
+  2. Fixed rate limiter memory leak (hourly cleanup)
+  3. Added image dimension guard (MAX_IMAGE_PIXELS = 16M)
+  4. Added GPU OOM handling with torch.cuda.empty_cache()
+  5. Added graceful shutdown (drain in-flight requests)
+  6. Fixed CORS (removed allow_credentials with wildcard origins)
+  7. Thread-safe active_requests counter via threading.Lock
 """
 
 from __future__ import annotations
@@ -25,19 +34,27 @@ import base64
 import io
 import logging
 import os
+import signal
+import threading
 import time
 import traceback
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from PIL import Image
+from prometheus_client import (
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -58,6 +75,7 @@ class ServerConfig:
     model_dir: str = os.getenv("MODEL_DIR", "./checkpoints")
     device: str = os.getenv("DEVICE", "auto")
     rate_limit_per_hour: int = int(os.getenv("RATE_LIMIT_PER_HOUR", "100"))
+    max_image_pixels: int = int(os.getenv("MAX_IMAGE_PIXELS", "16000000"))  # 16M pixels
 
     def resolve_device(self) -> str:
         if self.device == "auto":
@@ -66,6 +84,47 @@ class ServerConfig:
 
 
 CONFIG = ServerConfig()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prometheus metrics (proper histogram-based, not averages)
+# ─────────────────────────────────────────────────────────────────────────────
+
+REQUEST_COUNT = Counter(
+    "hndsr_requests_total",
+    "Total inference requests",
+    ["method", "endpoint", "status"],
+)
+ERROR_COUNT = Counter(
+    "hndsr_errors_total",
+    "Total inference errors",
+    ["error_type"],
+)
+INFERENCE_LATENCY = Histogram(
+    "hndsr_inference_seconds",
+    "Inference latency in seconds",
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0],
+)
+ACTIVE_REQUESTS = Gauge(
+    "hndsr_active_requests",
+    "Currently active inference requests",
+)
+GPU_MEMORY_USED = Gauge(
+    "hndsr_gpu_memory_used_bytes",
+    "GPU memory used in bytes",
+)
+UPTIME = Gauge(
+    "hndsr_uptime_seconds",
+    "Server uptime in seconds",
+)
+RATE_LIMITED = Counter(
+    "hndsr_rate_limited_total",
+    "Total requests rejected by rate limiter",
+)
+BACKPRESSURE_REJECTED = Counter(
+    "hndsr_backpressure_rejected_total",
+    "Total requests rejected by backpressure",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +158,7 @@ class HealthResponse(BaseModel):
     gpu_memory_used_mb: Optional[float] = None
     gpu_memory_total_mb: Optional[float] = None
     uptime_seconds: float
-    queue_depth: int
+    active_requests: int
 
 
 class VersionResponse(BaseModel):
@@ -113,32 +172,86 @@ class VersionResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Application state
+# Application state (thread-safe)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AppState:
-    """Mutable application state."""
-    model_loaded: bool = False
-    start_time: float = time.time()
-    inference_semaphore: asyncio.Semaphore = None
-    active_requests: int = 0
-    total_requests: int = 0
-    total_errors: int = 0
-    latency_sum_ms: float = 0.0
+    """
+    Mutable application state with thread-safe counters.
 
-    # Rate limiting (simple in-memory)
-    request_counts: dict = {}
+    Thread safety:
+      - active_requests uses a threading.Lock because it is modified
+        from both the async event loop and thread-pool executor threads.
+      - request_counts dict is only accessed from the event loop (single-threaded),
+        but the cleanup is also event-loop-only, so no lock needed there.
+    """
 
     def __init__(self):
-        self.inference_semaphore = asyncio.Semaphore(CONFIG.max_concurrent_inferences)
-        self.request_counts = {}
+        self.model_loaded: bool = False
+        self.start_time: float = time.time()
+        self.inference_semaphore: asyncio.Semaphore = asyncio.Semaphore(
+            CONFIG.max_concurrent_inferences
+        )
+        self._shutdown_event: asyncio.Event = asyncio.Event()
+
+        # Thread-safe active request counter
+        self._active_requests: int = 0
+        self._active_lock: threading.Lock = threading.Lock()
+
+        # Rate limiting (per-IP per-hour)
+        self.request_counts: dict = {}
+        self._request_counter: int = 0  # for periodic cleanup
+
+    @property
+    def active_requests(self) -> int:
+        with self._active_lock:
+            return self._active_requests
+
+    def increment_active(self) -> int:
+        with self._active_lock:
+            self._active_requests += 1
+            ACTIVE_REQUESTS.set(self._active_requests)
+            return self._active_requests
+
+    def decrement_active(self) -> int:
+        with self._active_lock:
+            self._active_requests -= 1
+            ACTIVE_REQUESTS.set(self._active_requests)
+            return self._active_requests
+
+    def check_rate_limit(self, client_ip: str) -> bool:
+        """
+        Check per-IP rate limit. Returns True if allowed, False if exceeded.
+
+        Memory leak fix: cleans up old hour-keys every 100 requests to prevent
+        unbounded dict growth (~336 MB/week at 10k IPs without cleanup).
+        """
+        now = time.time()
+        current_hour = int(now // 3600)
+        hour_key = f"{client_ip}:{current_hour}"
+
+        self.request_counts[hour_key] = self.request_counts.get(hour_key, 0) + 1
+
+        # Periodic cleanup: remove keys from previous hours
+        self._request_counter += 1
+        if self._request_counter % 100 == 0:
+            stale_keys = [
+                k for k in self.request_counts
+                if not k.endswith(f":{current_hour}")
+            ]
+            for k in stale_keys:
+                del self.request_counts[k]
+            if stale_keys:
+                logger.info("Rate limiter cleanup: removed %d stale keys", len(stale_keys))
+
+        return self.request_counts[hour_key] <= CONFIG.rate_limit_per_hour
 
 
-state = AppState()
+state: AppState = None  # Initialized in lifespan
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Lifespan (startup / shutdown)
+# Lifespan (startup / shutdown with graceful drain)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -146,9 +259,12 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan manager.
 
-    On startup: Load model, warmup GPU.
-    On shutdown: Release GPU memory.
+    On startup: Load model, warmup GPU, initialize state.
+    On shutdown: Wait for in-flight requests (up to 30s), release GPU memory.
     """
+    global state
+    state = AppState()
+
     logger.info("Starting HNDSR API server...")
     device = CONFIG.resolve_device()
     logger.info("Device: %s", device)
@@ -161,18 +277,40 @@ async def lifespan(app: FastAPI):
     # GPU warmup (prevents cold-start latency spike on first request)
     if device == "cuda":
         logger.info("Warming up GPU...")
-        dummy = torch.randn(1, 3, 64, 64, device=device)
-        _ = dummy * 2  # Simple operation to initialize CUDA context
-        del dummy
-        torch.cuda.empty_cache()
-        logger.info("GPU warm-up complete")
+        try:
+            dummy = torch.randn(1, 3, 64, 64, device=device)
+            _ = dummy * 2  # Simple operation to initialize CUDA context
+            del dummy
+            torch.cuda.empty_cache()
+            logger.info("GPU warm-up complete")
+        except Exception as exc:
+            logger.error("GPU warm-up failed: %s", exc)
 
     logger.info("HNDSR API ready!")
     yield
 
-    # Cleanup
+    # ── Graceful shutdown: drain in-flight requests ──────────────────
     logger.info("Shutting down HNDSR API...")
-    # TODO: Release model
+    state.model_loaded = False  # Stop accepting new requests via /ready
+
+    # Wait up to 30s for active requests to complete
+    drain_timeout = 30.0
+    drain_start = time.time()
+    while state.active_requests > 0 and (time.time() - drain_start) < drain_timeout:
+        logger.info(
+            "Draining %d active requests (%.0fs remaining)...",
+            state.active_requests,
+            drain_timeout - (time.time() - drain_start),
+        )
+        await asyncio.sleep(1.0)
+
+    if state.active_requests > 0:
+        logger.warning(
+            "Shutdown timeout: %d requests still active, forcing shutdown",
+            state.active_requests,
+        )
+
+    # Release GPU memory
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     logger.info("Shutdown complete")
@@ -189,34 +327,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: allow_credentials=False with wildcard origins (spec-compliant)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Middleware: request tracking
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.middleware("http")
-async def track_requests(request: Request, call_next):
-    """Track request count, latency, and errors."""
-    start = time.perf_counter()
-    state.total_requests += 1
-
-    try:
-        response = await call_next(request)
-        latency_ms = (time.perf_counter() - start) * 1000
-        state.latency_sum_ms += latency_ms
-        response.headers["X-Request-Latency-Ms"] = f"{latency_ms:.1f}"
-        return response
-    except Exception:
-        state.total_errors += 1
-        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,6 +358,9 @@ async def health():
         free, total = torch.cuda.mem_get_info(0)
         gpu_mem_used = (total - free) / 1e6
         gpu_mem_total = total / 1e6
+        GPU_MEMORY_USED.set(total - free)
+
+    UPTIME.set(time.time() - state.start_time)
 
     return HealthResponse(
         status="healthy" if state.model_loaded else "loading",
@@ -249,7 +370,7 @@ async def health():
         gpu_memory_used_mb=gpu_mem_used,
         gpu_memory_total_mb=gpu_mem_total,
         uptime_seconds=time.time() - state.start_time,
-        queue_depth=state.active_requests,
+        active_requests=state.active_requests,
     )
 
 
@@ -279,35 +400,37 @@ async def infer(request: InferenceRequest, req: Request):
     Super-resolution inference endpoint.
 
     Flow:
-      1. Validate payload size
-      2. Check queue depth (reject if overloaded)
-      3. Acquire semaphore (limit concurrent GPU ops)
+      1. Check backpressure (reject if overloaded)
+      2. Check rate limit (per-IP per-hour)
+      3. Validate payload size
       4. Decode base64 → PIL Image
-      5. Run inference in thread pool (don't block event loop)
-      6. Encode output → base64
-      7. Return response with metadata
+      5. Validate image dimensions (guard against decompression bombs)
+      6. Acquire semaphore (limit concurrent GPU ops)
+      7. Run inference in thread pool (don't block event loop)
+      8. Encode output → base64
+      9. Return response with metadata
 
     Error handling:
-      - 413: Payload too large
+      - 413: Payload too large or image dimensions too large
       - 422: Invalid image format
-      - 503: Server overloaded (Retry-After header)
+      - 429: Rate limit exceeded
+      - 503: Server overloaded or GPU OOM (Retry-After header)
       - 504: Inference timeout
       - 500: Unexpected error
     """
     # ── Backpressure: reject if overloaded ───────────────────────────
     if state.active_requests >= CONFIG.max_queue_depth:
+        BACKPRESSURE_REJECTED.inc()
         raise HTTPException(
             503,
             detail=f"Server overloaded ({state.active_requests} active requests). Retry later.",
             headers={"Retry-After": "5"},
         )
 
-    # ── Rate limiting (simple per-IP) ────────────────────────────────
+    # ── Rate limiting (per-IP, with memory leak fix) ─────────────────
     client_ip = req.client.host if req.client else "unknown"
-    now = time.time()
-    hour_key = f"{client_ip}:{int(now // 3600)}"
-    state.request_counts[hour_key] = state.request_counts.get(hour_key, 0) + 1
-    if state.request_counts[hour_key] > CONFIG.rate_limit_per_hour:
+    if not state.check_rate_limit(client_ip):
+        RATE_LIMITED.inc()
         raise HTTPException(429, detail="Rate limit exceeded")
 
     # ── Payload size check ───────────────────────────────────────────
@@ -324,10 +447,22 @@ async def infer(request: InferenceRequest, req: Request):
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         w, h = img.size
     except Exception as exc:
+        ERROR_COUNT.labels(error_type="decode").inc()
         raise HTTPException(422, detail=f"Invalid image: {exc}")
 
+    # ── Image dimension guard (prevent decompression bombs) ──────────
+    total_pixels = w * h
+    if total_pixels > CONFIG.max_image_pixels:
+        raise HTTPException(
+            413,
+            detail=(
+                f"Image too large: {w}×{h} = {total_pixels:,} pixels. "
+                f"Maximum: {CONFIG.max_image_pixels:,} pixels."
+            ),
+        )
+
     # ── Run inference ────────────────────────────────────────────────
-    state.active_requests += 1
+    state.increment_active()
     start_time = time.perf_counter()
 
     try:
@@ -348,21 +483,34 @@ async def infer(request: InferenceRequest, req: Request):
                 state.inference_semaphore.release()
 
     except asyncio.TimeoutError:
-        state.total_errors += 1
+        ERROR_COUNT.labels(error_type="timeout").inc()
         raise HTTPException(
             504,
             detail=f"Inference timeout ({CONFIG.request_timeout_s}s)",
         )
     except HTTPException:
         raise
+    except torch.cuda.OutOfMemoryError:
+        # ── GPU OOM handling ─────────────────────────────────────────
+        ERROR_COUNT.labels(error_type="gpu_oom").inc()
+        logger.error("GPU OOM during inference for %d×%d image", w, h)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        raise HTTPException(
+            503,
+            detail="GPU out of memory. Try a smaller image or lower scale factor.",
+            headers={"Retry-After": "10"},
+        )
     except Exception as exc:
-        state.total_errors += 1
+        ERROR_COUNT.labels(error_type="internal").inc()
         logger.error("Inference error: %s", traceback.format_exc())
         raise HTTPException(500, detail=f"Inference failed: {exc}")
     finally:
-        state.active_requests -= 1
+        state.decrement_active()
 
-    latency_ms = (time.perf_counter() - start_time) * 1000
+    latency_s = time.perf_counter() - start_time
+    INFERENCE_LATENCY.observe(latency_s)
+    REQUEST_COUNT.labels(method="POST", endpoint="/infer", status="200").inc()
 
     # ── Encode output ────────────────────────────────────────────────
     buf = io.BytesIO()
@@ -378,7 +526,7 @@ async def infer(request: InferenceRequest, req: Request):
             "output_size": f"{out_w}×{out_h}",
             "scale_factor": request.scale_factor,
             "ddim_steps": request.ddim_steps,
-            "latency_ms": round(latency_ms, 1),
+            "latency_ms": round(latency_s * 1000, 1),
             "device": CONFIG.resolve_device(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -404,6 +552,10 @@ def _run_inference(
     This function runs on a separate thread to avoid blocking the
     async event loop. It has exclusive access to the GPU via the
     semaphore acquired by the caller.
+
+    NOTE: Currently a placeholder (bicubic upscale). The actual HNDSR
+    model integration is tracked as a known limitation. See
+    docs/PRODUCTION_MVP.md for details.
     """
     if seed is not None:
         torch.manual_seed(seed)
@@ -412,14 +564,14 @@ def _run_inference(
     # engine = get_inference_engine()
     # hr_tensor = engine.infer(img, scale_factor, ddim_steps)
 
-    # Placeholder: bicubic upscale
+    # Placeholder: bicubic upscale (documented as known limitation)
     w, h = img.size
     output = img.resize((w * scale_factor, h * scale_factor), Image.BICUBIC)
     return output
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Metrics endpoint
+# Metrics endpoint (Prometheus-native via prometheus_client)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/metrics")
@@ -427,47 +579,30 @@ async def metrics():
     """
     Prometheus-compatible metrics endpoint.
 
-    Exposes:
-      - hndsr_requests_total
-      - hndsr_errors_total
-      - hndsr_active_requests
-      - hndsr_latency_avg_ms
-      - hndsr_gpu_memory_used_bytes
+    Uses prometheus_client library for proper metric types:
+      - hndsr_requests_total (Counter with labels)
+      - hndsr_errors_total (Counter with error_type label)
+      - hndsr_inference_seconds (Histogram with P50/P95/P99 support)
+      - hndsr_active_requests (Gauge)
+      - hndsr_gpu_memory_used_bytes (Gauge)
+      - hndsr_uptime_seconds (Gauge)
+      - hndsr_rate_limited_total (Counter)
+      - hndsr_backpressure_rejected_total (Counter)
+
+    Post-audit fix: Replaced manual average latency gauge with histogram.
+    Histograms enable: histogram_quantile(0.99, rate(hndsr_inference_seconds_bucket[5m]))
     """
-    lines = []
-    lines.append(f"# HELP hndsr_requests_total Total inference requests")
-    lines.append(f"# TYPE hndsr_requests_total counter")
-    lines.append(f"hndsr_requests_total {state.total_requests}")
-
-    lines.append(f"# HELP hndsr_errors_total Total inference errors")
-    lines.append(f"# TYPE hndsr_errors_total counter")
-    lines.append(f"hndsr_errors_total {state.total_errors}")
-
-    lines.append(f"# HELP hndsr_active_requests Currently active requests")
-    lines.append(f"# TYPE hndsr_active_requests gauge")
-    lines.append(f"hndsr_active_requests {state.active_requests}")
-
-    avg_latency = (
-        state.latency_sum_ms / state.total_requests
-        if state.total_requests > 0
-        else 0
-    )
-    lines.append(f"# HELP hndsr_latency_avg_ms Average request latency")
-    lines.append(f"# TYPE hndsr_latency_avg_ms gauge")
-    lines.append(f"hndsr_latency_avg_ms {avg_latency:.1f}")
-
+    # Update GPU memory before scrape
     if torch.cuda.is_available():
         free, total = torch.cuda.mem_get_info(0)
-        used = total - free
-        lines.append(f"# HELP hndsr_gpu_memory_used_bytes GPU memory used")
-        lines.append(f"# TYPE hndsr_gpu_memory_used_bytes gauge")
-        lines.append(f"hndsr_gpu_memory_used_bytes {used}")
+        GPU_MEMORY_USED.set(total - free)
 
-    lines.append(f"# HELP hndsr_uptime_seconds Server uptime")
-    lines.append(f"# TYPE hndsr_uptime_seconds gauge")
-    lines.append(f"hndsr_uptime_seconds {time.time() - state.start_time:.0f}")
+    UPTIME.set(time.time() - state.start_time)
 
-    return Response(content="\n".join(lines) + "\n", media_type="text/plain")
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

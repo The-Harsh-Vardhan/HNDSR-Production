@@ -1,0 +1,83 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# HNDSR Alerting Rules
+# ═══════════════════════════════════════════════════════════════════════════
+# Critical alerts: page on-call
+# Warning alerts: Slack notification / dashboard visibility
+
+groups:
+  - name: hndsr_critical
+    rules:
+
+      - alert: HighErrorRate
+        expr: >
+          rate(hndsr_errors_total[5m])
+          / (rate(hndsr_requests_total[5m]) > 0)
+          > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HNDSR error rate > 5%"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      - alert: InferenceLatencyP99High
+        expr: >
+          histogram_quantile(0.99, rate(hndsr_inference_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HNDSR P99 latency > 10s"
+          description: "P99 inference latency is {{ $value | humanizeDuration }}."
+
+      - alert: GPUMemoryExhausted
+        expr: >
+          hndsr_gpu_memory_used_bytes
+          / (16 * 1024 * 1024 * 1024)
+          > 0.95
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU memory > 95% (approaching OOM)"
+          description: "GPU memory usage is {{ $value | humanizePercentage }}."
+
+      - alert: ServiceDown
+        expr: up{job="hndsr-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HNDSR API is down"
+          description: "Prometheus cannot reach the HNDSR API scrape target."
+
+  - name: hndsr_warning
+    rules:
+
+      - alert: LatencyP95Elevated
+        expr: >
+          histogram_quantile(0.95, rate(hndsr_inference_seconds_bucket[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HNDSR P95 latency > 5s"
+          description: "P95 inference latency is {{ $value | humanizeDuration }}."
+
+      - alert: HighBackpressureRejection
+        expr: rate(hndsr_backpressure_rejected_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High backpressure rejection rate"
+          description: "{{ $value }} requests/s rejected due to queue depth."
+
+      - alert: HighRateLimiting
+        expr: rate(hndsr_rate_limited_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many requests being rate-limited"
+          description: "{{ $value }} requests/s being rate-limited."

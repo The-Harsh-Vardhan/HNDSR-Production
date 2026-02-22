@@ -1,0 +1,23 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Prometheus Configuration for HNDSR
+# ═══════════════════════════════════════════════════════════════════════════
+# Scrapes the FastAPI /metrics endpoint every 15s.
+# Alert rules loaded from alerting_rules.yml.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerting_rules.yml"
+
+scrape_configs:
+  - job_name: "hndsr-api"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["hndsr-api:8000"]
+        labels:
+          service: "hndsr"
+          environment: "production"
+    scrape_interval: 15s
+    scrape_timeout: 10s

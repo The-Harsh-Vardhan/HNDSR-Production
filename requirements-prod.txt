@@ -1,3 +1,8 @@
+# HNDSR Production Dependencies (pinned)
+# Generated: 2026-02-22
+# These are RUNTIME-ONLY dependencies for the production Docker image.
+# Dev/test tools (pytest, black, flake8, etc.) are in requirements.txt.
+
 # Core ML
 torch==2.1.2
 torchvision==0.16.2
@@ -10,21 +15,9 @@ uvicorn==0.27.0
 pydantic==2.5.3
 python-multipart==0.0.6
 
-# MLOps / Engineering
-mlflow==2.10.0
-dvc==3.38.1
+# Monitoring
 prometheus-client==0.19.0
-
-# Quality / Testing
-pytest==7.4.4
-pytest-asyncio==0.23.3
-httpx==0.26.0
-locust==2.20.1
-black==23.12.1
-flake8==7.0.0
-mypy==1.8.0
 
 # Utils
 python-dotenv==1.0.0
 pyyaml==6.0.1
-tqdm==4.66.1

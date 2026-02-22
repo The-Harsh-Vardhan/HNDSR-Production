@@ -10,6 +10,18 @@ Why   : DVC tracks reproducibility (data + code + params → artifacts).
         Both are needed; this module connects them.
 How   : After DVC produces checkpoints, this module registers them in
         MLflow with metadata, enabling promotion through deployment stages.
+
+Post-Audit Simplification (2026-02-22):
+  - Removed canary stage (canary_deploy.py deleted as premature)
+  - Simplified to 4-stage lifecycle: dev → staging → production → archived
+  - Added docstring noting in-memory limitation
+  - Quality gate logic preserved (solid, interview-defensible)
+
+Known Limitation:
+  Model versions are stored in-memory (self._versions list). A process
+  restart loses all registry state. For production, this should be backed
+  by MLflow's database. The in-memory list serves as a local cache and
+  fallback when MLflow is unavailable.
 """
 
 from __future__ import annotations
@@ -31,7 +43,7 @@ class ModelVersion:
     """Metadata for a registered model version."""
     name: str
     version: int
-    stage: str       # dev | staging | canary | production | archived
+    stage: str       # dev | staging | production | archived
     metrics: Dict[str, float]
     dataset_hash: str
     checkpoint_hash: str
@@ -44,18 +56,28 @@ class ModelRegistry:
     """
     HNDSR Model Registry — manages model lifecycle.
 
-    Stages:
-      1. dev       — any completed training run
-      2. staging   — passes automated quality gates
-      3. canary    — serving 10% of production traffic
-      4. production — serving 100% of production traffic
-      5. archived  — replaced by newer version
+    Stages (simplified post-audit):
+      1. dev        — any completed training run
+      2. staging    — passes automated quality gates
+      3. production — serving 100% of production traffic
+      4. archived   — replaced by newer version
 
     Promotion rules:
       - dev → staging:     Automated (PSNR > threshold, shape tests pass)
-      - staging → canary:  Manual trigger, auto-reverts if error rate spikes
-      - canary → production: Manual approval after monitoring period
+      - staging → production: Manual approval after review
+      - any → archived:    Always allowed
+
+    Known limitation:
+      Versions stored in-memory. Process restart loses state.
+      MLflow backend provides persistence when available.
     """
+
+    # Quality gates for staging promotion
+    STAGING_GATES = {
+        "psnr": (">=", 26.0),
+        "ssim": (">=", 0.75),
+        "lpips": ("<=", 0.30),
+    }
 
     def __init__(
         self,
@@ -126,9 +148,6 @@ class ModelRegistry:
 
         if self._mlflow:
             try:
-                from mlflow.models import infer_signature
-
-                # Log model artifacts
                 with self._mlflow.start_run(run_id=run_id) as run:
                     for fname in required_files:
                         self._mlflow.log_artifact(
@@ -176,18 +195,16 @@ class ModelRegistry:
         """
         Promote a model version to a new deployment stage.
 
-        Transition rules:
-          - dev → staging:     Requires PSNR > acceptance threshold
-          - staging → canary:  Requires manual approval
-          - canary → production: Requires monitoring period passed
-          - any → archived:    Always allowed
+        Transition rules (simplified — no canary):
+          - dev → staging:       Requires quality gates pass
+          - staging → production: Manual approval
+          - any → archived:      Always allowed
 
         Returns True if promotion succeeded.
         """
         valid_transitions = {
             "dev": ["staging", "archived"],
-            "staging": ["canary", "archived"],
-            "canary": ["production", "staging"],  # can roll back to staging
+            "staging": ["production", "archived"],
             "production": ["archived"],
             "archived": [],
         }
@@ -297,13 +314,7 @@ class ModelRegistry:
 
     def _check_staging_gates(self, version: ModelVersion) -> bool:
         """Check if a model meets staging promotion criteria."""
-        gates = {
-            "psnr": (">=", 26.0),
-            "ssim": (">=", 0.75),
-            "lpips": ("<=", 0.30),
-        }
-
-        for metric, (op, threshold) in gates.items():
+        for metric, (op, threshold) in self.STAGING_GATES.items():
             value = version.metrics.get(metric)
             if value is None:
                 logger.error("Missing metric '%s' for staging gate", metric)
@@ -339,7 +350,6 @@ class ModelRegistry:
         mapping = {
             "dev": "None",
             "staging": "Staging",
-            "canary": "Staging",      # MLflow doesn't have canary
             "production": "Production",
             "archived": "Archived",
         }
