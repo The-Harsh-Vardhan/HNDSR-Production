@@ -8,6 +8,7 @@ torch==2.1.2
 torchvision==0.16.2
 numpy==1.26.3
 pillow==10.2.0
+einops==0.7.0
 
 # API / Serving
 fastapi==0.109.0

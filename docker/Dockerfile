@@ -2,10 +2,12 @@
 # HNDSR Production Dockerfile — Multi-stage build
 # ═══════════════════════════════════════════════════════════════════════════
 # What: Multi-stage Docker image for GPU-accelerated HNDSR inference.
-# Why : Separates build-time deps from runtime → 40% smaller final image.
-#       Build stage includes compilers; runtime stage has only what's needed.
+# Why : Separates build-time deps from runtime → smaller final image.
 # How : Stage 1 (builder) installs Python deps. Stage 2 (runtime) copies
 #       only the virtual environment and application code.
+#
+# Model weights are mounted at runtime via docker-compose volumes
+# (not baked into the image — allows model updates without rebuild).
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Builder ─────────────────────────────────────────────────────
@@ -62,7 +64,7 @@ RUN mkdir -p /app/checkpoints /app/data /app/logs && \
 USER hndsr
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Expose API port
@@ -70,4 +72,4 @@ EXPOSE 8000
 
 # Entry point
 CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--workers", "1", "--log-level", "info"]
+    "--workers", "1", "--log-level", "info"]

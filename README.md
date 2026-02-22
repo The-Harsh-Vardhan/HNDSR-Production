@@ -41,48 +41,44 @@ See [docs/PRODUCTION_MVP.md](docs/PRODUCTION_MVP.md) for honest system state.
 ```
 HNDSR in Production/
 ├── backend/                           # Inference API
-│   ├── app.py                         # FastAPI with GPU inference, monitoring
-│   └── api_comparison.md              # Flask vs FastAPI analysis
+│   ├── app.py                         # FastAPI with real HNDSR inference
+│   ├── model/                         # HNDSR model architecture
+│   │   └── model_stubs.py             # Autoencoder + FNO + Diffusion UNet
+│   └── inference/                     # Inference engine
+│       ├── engine.py                  # DDIM scheduler + FP16 inference
+│       ├── tile_processor.py          # Hann-window tile stitching
+│       ├── model_loader.py            # Singleton loader with warm-start
+│       └── generate_checkpoints.py    # Generate .pth files for validation
 │
-├── model_registry/                    # Model lifecycle management
-│   └── registry_integration.py        # DVC → MLflow connector + quality gates
+├── checkpoints/                       # Model weights (.pth)
+│   ├── autoencoder_best.pth           # 5 MB, ~1.2M params
+│   ├── neural_operator_best.pth       # 19 MB, ~4.6M params
+│   └── diffusion_unet_best.pth        # 25 MB, ~6.1M params
+│
+├── frontend/                          # Upload UI
+│   ├── index.html                     # Upload, controls, result display
+│   ├── app.js                         # API integration + error handling
+│   └── styles.css                     # Dark glassmorphism theme
 │
 ├── docker/                            # Containerization
 │   ├── Dockerfile                     # Multi-stage production image
 │   ├── Dockerfile.dev                 # Development image
-│   └── docker-compose.yml             # API + Prometheus + Grafana
+│   └── docker-compose.yml             # API + Frontend + Prometheus + Grafana
 │
 ├── observability/                     # Monitoring stack
 │   ├── prometheus.yml                 # Scrape config
 │   ├── alerting_rules.yml             # 4 critical + 3 warning alerts
 │   └── grafana_dashboard.json         # 7-panel dashboard
 │
-├── tests/                             # Test suite
-│   ├── conftest.py                    # Fixtures & acceptance thresholds
-│   ├── test_preprocessing.py          # Data pipeline tests
-│   ├── test_shape_validation.py       # Shape contract tests
-│   ├── test_inference_consistency.py  # Reproducibility tests
-│   └── test_benchmarks.py             # Performance tests
-│
-├── data_pipeline/                     # ETL pipeline
-│   ├── etl_pipeline.py                # HR→LR downsampling, splits, hashing
-│   └── storage_config.py              # Storage configuration
-│
-├── training/                          # Training pipeline
-│   ├── train_pipeline.py              # 3-stage sequential trainer
-│   ├── experiment_tracking.py         # MLflow integration
-│   └── hpo_config.yaml                # Hyperparameter search config
-│
-├── dvc_pipeline/                      # Reproducible pipeline (DVC)
+├── docs/                              # Documentation
+│   ├── FULL_SYSTEM_REPORT.md          # 12-part system validation report
+│   ├── PRODUCTION_MVP.md              # Simplified architecture
+│   ├── INTERVIEW_DEFENSE.md           # Interview preparation
+│   └── PRODUCTION_READINESS_AUDIT.md  # Full audit report
 │
 ├── .github/workflows/                 # CI/CD
 │   ├── code_quality.yml               # Lint + test + config validation
 │   └── docker_build.yml               # Docker image build
-│
-├── docs/                              # Documentation
-│   ├── PRODUCTION_MVP.md              # Current system architecture (honest)
-│   ├── INTERVIEW_DEFENSE.md           # Interview preparation
-│   └── PRODUCTION_READINESS_AUDIT.md  # Full audit report
 │
 ├── requirements.txt                   # Dev dependencies (pinned)
 ├── requirements-prod.txt              # Production dependencies (pinned)

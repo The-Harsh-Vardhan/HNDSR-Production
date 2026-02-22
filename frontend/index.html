@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HNDSR — Satellite Super-Resolution</title>
+    <meta name="description" content="HNDSR: Hybrid Neural Operator-Diffusion Super-Resolution for satellite imagery">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">🛰️</div>
+                    <div>
+                        <h1>HNDSR</h1>
+                        <p class="subtitle">Hybrid Neural Operator–Diffusion Super-Resolution</p>
+                    </div>
+                </div>
+                <div class="status-badge" id="statusBadge">
+                    <span class="status-dot"></span>
+                    <span id="statusText">Checking...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Upload Section -->
+            <section class="upload-section glass-panel">
+                <h2>Upload Low-Resolution Image</h2>
+                <div class="upload-area" id="uploadArea">
+                    <input type="file" id="fileInput" accept="image/*" hidden>
+                    <div class="upload-placeholder" id="uploadPlaceholder">
+                        <div class="upload-icon">📤</div>
+                        <p>Drop satellite image here or <span class="upload-link">browse</span></p>
+                        <p class="upload-hint">PNG, JPEG, AVIF • Max 16M pixels</p>
+                    </div>
+                    <img id="previewImage" class="preview-image hidden" alt="Input preview">
+                </div>
+
+                <!-- Controls -->
+                <div class="controls">
+                    <div class="control-group">
+                        <label for="scaleSelect">Scale Factor</label>
+                        <select id="scaleSelect">
+                            <option value="2">2×</option>
+                            <option value="4" selected>4×</option>
+                            <option value="8">8×</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="ddimSteps">DDIM Steps</label>
+                        <select id="ddimSteps">
+                            <option value="20">20 (Fast)</option>
+                            <option value="50" selected>50 (Default)</option>
+                            <option value="100">100 (Quality)</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="seedInput">Seed</label>
+                        <input type="number" id="seedInput" placeholder="Random" min="0">
+                    </div>
+                </div>
+
+                <button id="inferBtn" class="btn-primary" disabled>
+                    <span id="btnText">Super-Resolve</span>
+                    <div id="btnSpinner" class="spinner hidden"></div>
+                </button>
+            </section>
+
+            <!-- Results Section -->
+            <section class="results-section glass-panel hidden" id="resultsSection">
+                <h2>Super-Resolved Output</h2>
+                <div class="result-grid">
+                    <div class="result-card">
+                        <h3>Input (LR)</h3>
+                        <img id="resultInput" alt="Low resolution input">
+                        <p class="img-info" id="inputInfo"></p>
+                    </div>
+                    <div class="result-arrow">→</div>
+                    <div class="result-card">
+                        <h3>Output (HR)</h3>
+                        <img id="resultOutput" alt="Super-resolved output">
+                        <p class="img-info" id="outputInfo"></p>
+                    </div>
+                </div>
+
+                <!-- Metadata -->
+                <div class="metadata-grid" id="metadataGrid">
+                    <div class="meta-card">
+                        <div class="meta-label">Latency</div>
+                        <div class="meta-value" id="metaLatency">—</div>
+                    </div>
+                    <div class="meta-card">
+                        <div class="meta-label">Scale</div>
+                        <div class="meta-value" id="metaScale">—</div>
+                    </div>
+                    <div class="meta-card">
+                        <div class="meta-label">DDIM Steps</div>
+                        <div class="meta-value" id="metaDDIM">—</div>
+                    </div>
+                    <div class="meta-card">
+                        <div class="meta-label">Device</div>
+                        <div class="meta-value" id="metaDevice">—</div>
+                    </div>
+                    <div class="meta-card">
+                        <div class="meta-label">Model</div>
+                        <div class="meta-value" id="metaModel">—</div>
+                    </div>
+                    <div class="meta-card">
+                        <div class="meta-label">FP16</div>
+                        <div class="meta-value" id="metaFP16">—</div>
+                    </div>
+                </div>
+
+                <button id="downloadBtn" class="btn-secondary">Download HR Image</button>
+            </section>
+
+            <!-- Error Display -->
+            <div class="error-banner hidden" id="errorBanner">
+                <span class="error-icon">⚠️</span>
+                <span id="errorText"></span>
+                <button class="error-close" onclick="document.getElementById('errorBanner').classList.add('hidden')">✕</button>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>HNDSR v1.0.0 • Autoencoder + FNO + Diffusion UNet • <a href="/docs" target="_blank">API Docs</a> • <a href="/metrics" target="_blank">Metrics</a></p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

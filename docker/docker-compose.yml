@@ -1,14 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# HNDSR Docker Compose — Simplified MVP Stack
+# HNDSR Docker Compose — Full Stack
 # ═══════════════════════════════════════════════════════════════════════════
-# Post-audit simplification (2026-02-22):
-#   Removed: hndsr-worker (orphaned), nginx (no config), redis (unused by API)
-#   Kept: hndsr-api (inference), prometheus (metrics), grafana (dashboards)
-#
 # Services:
-#   1. hndsr-api     — FastAPI server (GPU, single worker)
-#   2. prometheus     — Metrics collection (scrapes /metrics every 15s)
-#   3. grafana        — Metrics dashboard
+#   1. hndsr-api     — FastAPI + real HNDSR model inference (GPU)
+#   2. hndsr-frontend — Static frontend served via Nginx
+#   3. prometheus     — Metrics collection (scrapes /metrics every 15s)
+#   4. grafana        — Metrics dashboard
 # ═══════════════════════════════════════════════════════════════════════════
 
 version: "3.8"
@@ -28,12 +25,16 @@ services:
       - MODEL_DIR=/app/checkpoints
       - MAX_CONCURRENT=4
       - MAX_QUEUE_DEPTH=20
-      - REQUEST_TIMEOUT_S=30
+      - REQUEST_TIMEOUT_S=120
       - RATE_LIMIT_PER_HOUR=100
       - MAX_IMAGE_PIXELS=16000000
       - MODEL_VERSION=1.0.0
+      - USE_FP16=true
+      - DDIM_STEPS=50
+      - TILE_SIZE=256
+      - TILE_OVERLAP=32
     volumes:
-      - model-data:/app/checkpoints
+      - ../checkpoints:/app/checkpoints
       - ./logs:/app/logs
     deploy:
       resources:
@@ -47,8 +48,20 @@ services:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 30s
       timeout: 5s
-      start_period: 60s
+      start_period: 120s
       retries: 3
+
+  # ── Frontend ──────────────────────────────────────────────────────────
+  hndsr-frontend:
+    image: nginx:1.25-alpine
+    container_name: hndsr-frontend
+    ports:
+      - "3000:80"
+    volumes:
+      - ../frontend:/usr/share/nginx/html:ro
+    depends_on:
+      - hndsr-api
+    restart: unless-stopped
 
   # ── Prometheus ───────────────────────────────────────────────────────
   prometheus:
@@ -85,8 +98,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  model-data:
-    driver: local
   prometheus-data:
     driver: local
   grafana-data:
