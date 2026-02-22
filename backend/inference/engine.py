@@ -195,25 +195,29 @@ class HNDSRInferenceEngine:
         if seed is not None:
             torch.manual_seed(seed)
 
+        # Stage 2: Neural Operator → structural prior c
+        # MUST run in FP32: torch.fft.rfft2 produces complex tensors which
+        # don't support FP16 on CUDA (baddbmm_cuda not implemented for ComplexHalf)
+        context = self.neural_operator(lr_tiles.float(), scale)
+
+        # Stage 3 + Stage 1: FP16 autocast for diffusion + decoder
         amp_ctx = autocast(device_type=self.device.type, dtype=torch.float16) if self.use_fp16 else contextlib.nullcontext()
 
         with amp_ctx:
-            # Stage 2: Neural Operator → structural prior c
-            context = self.neural_operator(lr_tiles, scale)
-
-            # Stage 3: DDIM reverse diffusion
+            # DDIM reverse diffusion
             z_t = torch.randn(
                 B, context.shape[1], context.shape[2], context.shape[3],
                 device=self.device,
             )
+            context_amp = context.half() if self.use_fp16 else context
 
             for t_idx in self.scheduler.timesteps:
                 t_batch = t_idx.expand(B)
-                noise_pred = self.diffusion_unet(z_t, t_batch, context)
+                noise_pred = self.diffusion_unet(z_t, t_batch, context_amp)
                 z_t = self.scheduler.step(noise_pred, int(t_idx), z_t)
 
             # Stage 1 decoder: latent → HR image
-            hr_tiles = self.autoencoder.decode(z_t)
+            hr_tiles = self.autoencoder.decode(z_t.float())
 
         elapsed = time.perf_counter() - t0
         logger.debug("infer_batch: B=%d scale=%.1f elapsed=%.3fs", B, scale, elapsed)

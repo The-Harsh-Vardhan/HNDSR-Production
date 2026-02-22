@@ -80,10 +80,10 @@ class ServerConfig:
     device: str = os.getenv("DEVICE", "auto")
     rate_limit_per_hour: int = int(os.getenv("RATE_LIMIT_PER_HOUR", "100"))
     max_image_pixels: int = int(os.getenv("MAX_IMAGE_PIXELS", "16000000"))
-    use_fp16: bool = os.getenv("USE_FP16", "true").lower() == "true"
-    ddim_steps: int = int(os.getenv("DDIM_STEPS", "50"))
-    tile_size: int = int(os.getenv("TILE_SIZE", "256"))
-    tile_overlap: int = int(os.getenv("TILE_OVERLAP", "32"))
+    use_fp16: bool = os.getenv("USE_FP16", "false").lower() == "true"
+    ddim_steps: int = int(os.getenv("DDIM_STEPS", "20"))
+    tile_size: int = int(os.getenv("TILE_SIZE", "64"))
+    tile_overlap: int = int(os.getenv("TILE_OVERLAP", "8"))
 
 
 CONFIG = ServerConfig()
@@ -486,29 +486,24 @@ def _run_real_inference(
       Stage 3: DDIM reverse diffusion (50 steps)
       Stage 1: Autoencoder decoder → HR image
 
-    The output is in [-1, 1] range, (3, H, W) tensor.
+    For large images, uses the tile processor with Hann-window stitching
+    to avoid GPU OOM. The output is in [-1, 1] range, (3, H, W) tensor.
     """
-    engine = state.engine
-
     if seed is not None:
         torch.manual_seed(seed)
 
-    # Add batch dimension: (3, H, W) → (1, 3, H, W)
-    lr_batch = lr_tensor.unsqueeze(0)
+    _, h_in, w_in = lr_tensor.shape
 
-    # Run inference through the engine
-    hr_batch = engine.infer_batch(lr_batch, scale=float(scale_factor), seed=seed)
-
-    # Remove batch dimension: (1, 3, H, W) → (3, H, W)
-    hr_tensor = hr_batch.squeeze(0)
+    # Use tile processor for large images (prevents GPU OOM)
+    tile_proc = state.tile_processor
+    hr_tensor = tile_proc.process(lr_tensor, scale=float(scale_factor), seed=seed)
 
     # Upscale to target resolution (model outputs same spatial size as input)
-    _, h_out, w_out = hr_tensor.shape
-    _, h_in, w_in = lr_tensor.shape
+    _, h_cur, w_cur = hr_tensor.shape
     target_h = h_in * scale_factor
     target_w = w_in * scale_factor
 
-    if h_out != target_h or w_out != target_w:
+    if h_cur != target_h or w_cur != target_w:
         hr_tensor = torch.nn.functional.interpolate(
             hr_tensor.unsqueeze(0),
             size=(target_h, target_w),
