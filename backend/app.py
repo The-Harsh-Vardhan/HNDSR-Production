@@ -48,11 +48,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import re
+
 import torch
 import torchvision.transforms.functional as TF
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
+
+# Register AVIF / HEIF support (iPhones, modern browsers)
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    pillow_heif.register_avif_opener()
+except ImportError:
+    pass  # graceful degradation — only JPEG/PNG/WebP supported
 from prometheus_client import (
     Counter,
     Gauge,
@@ -386,12 +396,30 @@ async def infer(request: InferenceRequest, req: Request):
 
     # Decode image
     try:
-        img_bytes = base64.b64decode(request.image)
+        raw_b64 = request.image
+        # Strip data-URL prefix if the client accidentally left it
+        if raw_b64.startswith("data:"):
+            raw_b64 = raw_b64.split(",", 1)[-1]
+        # Fix missing base64 padding
+        raw_b64 = raw_b64.strip()
+        padding = 4 - len(raw_b64) % 4
+        if padding != 4:
+            raw_b64 += "=" * padding
+        img_bytes = base64.b64decode(raw_b64, validate=True)
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         w, h = img.size
+    except base64.binascii.Error as exc:
+        ERROR_COUNT.labels(error_type="decode").inc()
+        raise HTTPException(422, detail=f"Invalid base64 encoding: {exc}")
+    except Image.UnidentifiedImageError:
+        ERROR_COUNT.labels(error_type="decode").inc()
+        raise HTTPException(
+            422,
+            detail="Unsupported image format. Please upload a JPEG or PNG file.",
+        )
     except Exception as exc:
         ERROR_COUNT.labels(error_type="decode").inc()
-        raise HTTPException(422, detail=f"Invalid image: {exc}")
+        raise HTTPException(422, detail=f"Could not decode image: {exc}")
 
     # Dimension guard
     total_pixels = w * h

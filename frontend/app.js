@@ -81,8 +81,18 @@ fileInput.addEventListener('change', () => {
 });
 
 function handleFile(file) {
+    const SUPPORTED_TYPES = [
+        'image/png', 'image/jpeg', 'image/webp',
+        'image/avif', 'image/bmp', 'image/tiff',
+    ];
+
     if (!file.type.startsWith('image/')) {
         showError('Please select an image file.');
+        return;
+    }
+
+    if (!SUPPORTED_TYPES.includes(file.type)) {
+        showError(`Unsupported format (${file.type}). Please use PNG, JPEG, or WebP.`);
         return;
     }
 
