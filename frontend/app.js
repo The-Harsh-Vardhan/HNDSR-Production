@@ -3,9 +3,12 @@
  * Handles image upload, API communication, result display, and error handling.
  */
 
-const API_BASE = window.location.port === '3000'
+// --- Configuration ---
+// If running on localhost, use local API. Otherwise, use your Hugging Face URL.
+const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
-    : window.location.origin;
+    : 'https://YOUR_USERNAME-HNDSR.hf.space'; // <--- UPDATE THIS after deploying to Hugging Face
+const POLL_INTERVAL = 5000; // 5 seconds
 
 // DOM Elements
 const fileInput = document.getElementById('fileInput');
