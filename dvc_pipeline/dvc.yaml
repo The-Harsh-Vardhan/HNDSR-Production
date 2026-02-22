@@ -1,0 +1,149 @@
+# DVC Pipeline Definition
+# =======================
+# Reproducible 5-stage training pipeline for HNDSR.
+#
+# Run: dvc repro
+# Check: dvc status
+# Push: dvc push
+
+stages:
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Stage 1: Data Preprocessing (ETL)
+  # ════════════════════════════════════════════════════════════════════════
+  preprocess:
+    cmd: >-
+      python ../data_pipeline/etl_pipeline.py
+      --input-dir ${data.raw_dir}
+      --output-dir ${data.processed_dir}
+      --scales ${data.scales}
+      --split-ratio ${data.train_ratio} ${data.val_ratio} ${data.test_ratio}
+      --seed ${global.seed}
+    deps:
+      - ../data_pipeline/etl_pipeline.py
+      - ${data.raw_dir}
+    params:
+      - data
+      - global.seed
+    outs:
+      - ${data.processed_dir}/train/HR
+      - ${data.processed_dir}/train/LR_2x
+      - ${data.processed_dir}/train/LR_4x
+      - ${data.processed_dir}/val/HR
+      - ${data.processed_dir}/val/LR_2x
+      - ${data.processed_dir}/val/LR_4x
+      - ${data.processed_dir}/test/HR
+      - ${data.processed_dir}/test/LR_2x
+      - ${data.processed_dir}/test/LR_4x
+    metrics:
+      - ${data.processed_dir}/manifest.json:
+          cache: false
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Stage 2: Autoencoder Training
+  # ════════════════════════════════════════════════════════════════════════
+  train_autoencoder:
+    cmd: >-
+      python ../training/train_pipeline.py
+      --stage autoencoder
+      --seed ${global.seed}
+      --batch-size ${global.batch_size}
+      --ae-lr ${autoencoder.learning_rate}
+      --ae-epochs ${autoencoder.epochs}
+      --data-dir ${data.processed_dir}
+      --checkpoint-dir ./checkpoints
+    deps:
+      - ../training/train_pipeline.py
+      - ../training/experiment_tracking.py
+      - ${data.processed_dir}/train/HR
+    params:
+      - autoencoder
+      - global
+    outs:
+      - ./checkpoints/autoencoder_best.pth
+    plots:
+      - ./checkpoints/autoencoder_metrics.json:
+          cache: false
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Stage 3: Neural Operator Training
+  # ════════════════════════════════════════════════════════════════════════
+  train_neural_operator:
+    cmd: >-
+      python ../training/train_pipeline.py
+      --stage neural_operator
+      --seed ${global.seed}
+      --batch-size ${global.batch_size}
+      --no-lr ${neural_operator.learning_rate}
+      --no-epochs ${neural_operator.epochs}
+      --data-dir ${data.processed_dir}
+      --checkpoint-dir ./checkpoints
+      --ae-checkpoint ./checkpoints/autoencoder_best.pth
+    deps:
+      - ../training/train_pipeline.py
+      - ./checkpoints/autoencoder_best.pth
+      - ${data.processed_dir}/train/HR
+      - ${data.processed_dir}/train/LR_4x
+    params:
+      - neural_operator
+      - global
+    outs:
+      - ./checkpoints/neural_operator_best.pth
+    plots:
+      - ./checkpoints/neural_operator_metrics.json:
+          cache: false
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Stage 4: Diffusion UNet Training
+  # ════════════════════════════════════════════════════════════════════════
+  train_diffusion:
+    cmd: >-
+      python ../training/train_pipeline.py
+      --stage diffusion
+      --seed ${global.seed}
+      --batch-size ${global.batch_size}
+      --diff-lr ${diffusion.learning_rate}
+      --diff-epochs ${diffusion.epochs}
+      --data-dir ${data.processed_dir}
+      --checkpoint-dir ./checkpoints
+      --ae-checkpoint ./checkpoints/autoencoder_best.pth
+      --no-checkpoint ./checkpoints/neural_operator_best.pth
+    deps:
+      - ../training/train_pipeline.py
+      - ./checkpoints/autoencoder_best.pth
+      - ./checkpoints/neural_operator_best.pth
+      - ${data.processed_dir}/train/HR
+      - ${data.processed_dir}/train/LR_4x
+    params:
+      - diffusion
+      - global
+    outs:
+      - ./checkpoints/diffusion_unet_best.pth
+    plots:
+      - ./checkpoints/diffusion_metrics.json:
+          cache: false
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Stage 5: Evaluation
+  # ════════════════════════════════════════════════════════════════════════
+  evaluate:
+    cmd: >-
+      python ../training/train_pipeline.py
+      --stage evaluate
+      --data-dir ${data.processed_dir}
+      --checkpoint-dir ./checkpoints
+      --output-dir ./evaluation
+    deps:
+      - ./checkpoints/autoencoder_best.pth
+      - ./checkpoints/neural_operator_best.pth
+      - ./checkpoints/diffusion_unet_best.pth
+      - ${data.processed_dir}/test/HR
+      - ${data.processed_dir}/test/LR_4x
+    metrics:
+      - ./evaluation/metrics.json:
+          cache: false
+    plots:
+      - ./evaluation/psnr_distribution.json:
+          cache: false
+      - ./evaluation/visual_samples/:
+          cache: false

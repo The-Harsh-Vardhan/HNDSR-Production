@@ -1,0 +1,159 @@
+# HNDSR Hyperparameter Optimization Configuration
+# ================================================
+# Used by experiment_tracking.py for automated sweeps.
+#
+# What : Defines the search space for Optuna/W&B hyperparameter sweeps.
+# Why  : Centralised config prevents search space inconsistencies between
+#         runs and enables reproducible HPO.
+# How  : Optuna reads this config and uses TPE (Tree-structured Parzen
+#         Estimator) for Bayesian optimization.
+
+study:
+  name: "hndsr-hpo"
+  direction: "maximize"     # Maximize PSNR
+  n_trials: 20
+  timeout_hours: 24.0
+  sampler: "tpe"
+  seed: 42
+
+# ── Search Space ─────────────────────────────────────────────────────────────
+
+search_space:
+
+  # Stage 1: Autoencoder
+  autoencoder:
+    learning_rate:
+      type: float
+      low: 1.0e-5
+      high: 1.0e-3
+      log: true
+    epochs:
+      type: int
+      low: 10
+      high: 30
+      step: 5
+    encoder_channels:
+      type: categorical
+      choices: [32, 64, 128]
+    latent_dim:
+      type: categorical
+      choices: [64, 128, 256]
+    loss_function:
+      type: categorical
+      choices: ["l1", "l2", "perceptual"]
+
+  # Stage 2: Neural Operator (FNO)
+  neural_operator:
+    learning_rate:
+      type: float
+      low: 1.0e-5
+      high: 5.0e-4
+      log: true
+    epochs:
+      type: int
+      low: 10
+      high: 25
+      step: 5
+    n_modes:
+      type: int
+      low: 8
+      high: 32
+      step: 4
+    n_layers:
+      type: int
+      low: 3
+      high: 8
+    hidden_channels:
+      type: categorical
+      choices: [32, 64, 128]
+    fft_precision:
+      type: categorical
+      choices: ["fp16", "fp32"]
+      description: "FP32 for FFT prevents overflow but costs ~15% throughput"
+
+  # Stage 3: Diffusion UNet
+  diffusion:
+    learning_rate:
+      type: float
+      low: 1.0e-5
+      high: 5.0e-4
+      log: true
+    epochs:
+      type: int
+      low: 20
+      high: 50
+      step: 10
+    diffusion_timesteps:
+      type: categorical
+      choices: [500, 1000, 2000]
+    ddim_steps:
+      type: int
+      low: 20
+      high: 100
+      step: 10
+    ddim_eta:
+      type: float
+      low: 0.0
+      high: 1.0
+    unet_channels:
+      type: categorical
+      choices: [64, 128, 256]
+    attention_resolutions:
+      type: categorical
+      choices: ["16", "8,16", "8,16,32"]
+
+  # Global
+  global:
+    batch_size:
+      type: categorical
+      choices: [4, 8, 16, 32]
+    optimizer:
+      type: categorical
+      choices: ["adam", "adamw"]
+    weight_decay:
+      type: float
+      low: 0.0
+      high: 0.1
+    scheduler:
+      type: categorical
+      choices: ["cosine", "step", "none"]
+    seed:
+      type: int
+      low: 0
+      high: 9999
+
+# ── Pruning ──────────────────────────────────────────────────────────────────
+
+pruning:
+  type: "median"
+  n_warmup_steps: 5         # Don't prune before 5 epochs
+  n_startup_trials: 3       # Don't prune first 3 trials
+  interval_steps: 1         # Check pruning every epoch
+
+# ── Resource Constraints ─────────────────────────────────────────────────────
+
+resources:
+  max_gpu_memory_gb: 16     # Reject configs that would exceed this
+  max_training_hours: 8     # Per-trial timeout
+  n_gpus: 1                 # Trials use single GPU
+
+# ── Metrics to Track ─────────────────────────────────────────────────────────
+
+tracked_metrics:
+  primary: "val_psnr"       # Used for optimization
+  secondary:
+    - "val_ssim"
+    - "val_lpips"
+    - "train_loss"
+    - "val_loss"
+    - "training_duration_seconds"
+    - "gpu_memory_peak_gb"
+
+# ── Acceptance Thresholds ────────────────────────────────────────────────────
+
+thresholds:
+  min_psnr: 26.0            # Reject runs below this
+  min_ssim: 0.75
+  max_lpips: 0.30
+  max_latency_ms: 3000      # Per-tile inference latency
+  max_memory_gb: 12         # Peak GPU memory during inference

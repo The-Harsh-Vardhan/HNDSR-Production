@@ -1,0 +1,77 @@
+# HNDSR Hyperparameters — Versioned with DVC
+# ============================================
+# This file is tracked by DVC alongside dvc.yaml.
+# Any change here triggers re-execution of dependent stages.
+#
+# Edit this file → dvc repro → only affected stages rerun.
+
+# ── Global ───────────────────────────────────────────────────────────────────
+global:
+  seed: 42
+  batch_size: 16
+  num_workers: 4
+  device: "auto"  # auto | cuda | cpu
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+data:
+  raw_dir: "../data/raw"
+  processed_dir: "../data/processed"
+  scales: "2 4 6"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  image_size: 256        # Crop size for training patches
+  augmentation: true
+
+# ── Stage 1: Autoencoder ─────────────────────────────────────────────────────
+autoencoder:
+  learning_rate: 1.0e-4
+  epochs: 20
+  loss: "l1"             # l1 | l2 | perceptual
+  weight_decay: 0.0
+  scheduler: "cosine"
+  encoder_channels: 64
+  latent_dim: 128
+  n_residual_blocks: 4
+
+# ── Stage 2: Neural Operator (FNO) ──────────────────────────────────────────
+neural_operator:
+  learning_rate: 1.0e-4
+  epochs: 15
+  loss: "mse"
+  weight_decay: 1.0e-5
+  scheduler: "cosine"
+  n_modes: 16
+  n_layers: 4
+  hidden_channels: 64
+  fft_precision: "fp32"   # fp32 prevents overflow in frequency domain
+
+# ── Stage 3: Diffusion UNet ─────────────────────────────────────────────────
+diffusion:
+  learning_rate: 2.0e-4
+  epochs: 30
+  loss: "mse"             # Noise prediction MSE
+  weight_decay: 0.0
+  scheduler: "cosine"
+  timesteps: 1000
+  ddim_steps: 50          # Inference acceleration
+  ddim_eta: 0.0           # 0.0 = fully deterministic DDIM
+  beta_start: 1.0e-4
+  beta_end: 0.02
+  beta_schedule: "linear"
+  unet_channels: 128
+  attention_resolutions: "8,16"
+  gradient_clip: 1.0      # Prevent training collapse
+
+# ── Evaluation ───────────────────────────────────────────────────────────────
+evaluation:
+  metrics:
+    - psnr
+    - ssim
+    - lpips
+  num_test_samples: 100
+  save_visual_samples: true
+  acceptance_thresholds:
+    min_psnr: 26.0
+    min_ssim: 0.75
+    max_lpips: 0.30
