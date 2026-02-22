@@ -1,0 +1,31 @@
+# Core ML
+torch>=2.0.0
+torchvision
+numpy>=1.24.0
+pillow>=10.0.0
+
+# API / Serving
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+python-multipart
+
+# MLOps / Engineering
+mlflow>=2.5.0
+dvc>=3.0.0
+prometheus-client>=0.17.0
+redis>=4.5.0
+
+# Quality / Testing
+pytest>=7.0.0
+pytest-asyncio
+httpx
+locust>=2.15.0
+black
+flake8
+mypy
+
+# Utils
+python-dotenv
+pyyaml
+tqdm
