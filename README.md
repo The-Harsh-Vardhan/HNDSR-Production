@@ -191,11 +191,11 @@ docker compose up -d
 
 ### Option 2: Hugging Face Spaces
 
-The project includes a dedicated [`Dockerfile.hf`](Dockerfile.hf) optimized for HF Spaces:
+The root [`Dockerfile`](Dockerfile) is optimized for HF Spaces:
 
 ```bash
 # Build locally to test
-docker build -f Dockerfile.hf -t hndsr-hf .
+docker build -t hndsr-hf .
 docker run -p 7860:7860 hndsr-hf
 ```
 
@@ -363,7 +363,7 @@ HNDSR-Production/
 ├── docs/
 │   └── PRODUCTION_READINESS_AUDIT.md  # Full production audit report
 │
-├── Dockerfile.hf               # Hugging Face Spaces deployment image
+├── Dockerfile                  # Hugging Face Spaces deployment image
 ├── architecture.md             # Detailed ASCII architecture diagrams
 ├── requirements.txt            # Full dependencies (dev + test + prod)
 ├── requirements-prod.txt       # Pinned production-only dependencies
