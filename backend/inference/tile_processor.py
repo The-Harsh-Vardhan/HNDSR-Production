@@ -191,7 +191,8 @@ class SatelliteTileProcessor:
             batch = torch.stack(tiles[i : i + self.batch_size])
             hr_batch = self.engine.infer_batch(batch, scale=scale, seed=seed)
             hr_tiles.extend(hr_batch.unbind(0))
-            logger.debug("Processed tiles %d-%d / %d", i, min(i + self.batch_size, n_tiles), n_tiles)
+            done = min(i + self.batch_size, n_tiles)
+            logger.info("Tile %d/%d done", done, n_tiles)
 
         device = hr_tiles[0].device
         hr_image = stitch_tiles(hr_tiles, coords, hr_shape, scale,

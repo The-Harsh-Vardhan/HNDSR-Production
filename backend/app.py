@@ -83,7 +83,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 class ServerConfig:
     """Server configuration from environment variables."""
     max_concurrent_inferences: int = int(os.getenv("MAX_CONCURRENT", "4"))
-    request_timeout_s: float = float(os.getenv("REQUEST_TIMEOUT_S", "120"))
+    request_timeout_s: float = float(os.getenv("REQUEST_TIMEOUT_S", "300"))
     max_payload_mb: float = float(os.getenv("MAX_PAYLOAD_MB", "20"))
     max_queue_depth: int = int(os.getenv("MAX_QUEUE_DEPTH", "20"))
     model_dir: str = os.getenv("MODEL_DIR", "./checkpoints")
@@ -91,9 +91,13 @@ class ServerConfig:
     rate_limit_per_hour: int = int(os.getenv("RATE_LIMIT_PER_HOUR", "100"))
     max_image_pixels: int = int(os.getenv("MAX_IMAGE_PIXELS", "16000000"))
     use_fp16: bool = os.getenv("USE_FP16", "false").lower() == "true"
-    ddim_steps: int = int(os.getenv("DDIM_STEPS", "20"))
-    tile_size: int = int(os.getenv("TILE_SIZE", "64"))
-    tile_overlap: int = int(os.getenv("TILE_OVERLAP", "8"))
+    ddim_steps: int = int(os.getenv("DDIM_STEPS", "10"))
+    tile_size: int = int(os.getenv("TILE_SIZE", "128"))
+    tile_overlap: int = int(os.getenv("TILE_OVERLAP", "16"))
+    # Max longest-side dimension for input images (0 = no limit).
+    # On CPU-only deployments, large inputs cause timeouts; server
+    # will auto-downscale to this before inference.
+    max_input_dim: int = int(os.getenv("MAX_INPUT_DIM", "512"))
 
 
 CONFIG = ServerConfig()
@@ -425,6 +429,16 @@ async def infer(request: InferenceRequest, req: Request):
     total_pixels = w * h
     if total_pixels > CONFIG.max_image_pixels:
         raise HTTPException(413, detail=f"Image too large: {w}x{h} = {total_pixels:,} px. Max: {CONFIG.max_image_pixels:,}")
+
+    # Auto-downscale large inputs for CPU-only deployments to avoid timeouts
+    max_dim = CONFIG.max_input_dim
+    if max_dim > 0 and max(w, h) > max_dim:
+        ratio = max_dim / max(w, h)
+        new_w, new_h = int(w * ratio), int(h * ratio)
+        logger.info("Auto-downscaling input %dx%d → %dx%d (max_input_dim=%d)",
+                    w, h, new_w, new_h, max_dim)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        w, h = img.size
 
     # Convert to tensor [-1, 1]
     lr_tensor = TF.to_tensor(img) * 2.0 - 1.0  # (3, H, W) in [-1, 1]

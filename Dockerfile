@@ -42,10 +42,15 @@ WORKDIR $HOME/app
 COPY --chown=user backend/ ./backend/
 COPY --chown=user checkpoints/ ./checkpoints/
 
-# Set defaults for Hugging Face
+# Set defaults for Hugging Face (CPU-only free tier)
 ENV DEVICE=cpu
 ENV MODEL_DIR=./checkpoints
 ENV USE_FP16=false
+ENV DDIM_STEPS=10
+ENV TILE_SIZE=128
+ENV TILE_OVERLAP=16
+ENV REQUEST_TIMEOUT_S=300
+ENV MAX_INPUT_DIM=512
 
 # Hugging Face Spaces listen on port 7860
 EXPOSE 7860
