@@ -328,7 +328,7 @@ HNDSR-Production/
 ├── checkpoints/                 # Model weights (~12M params total)
 │   ├── autoencoder_best.pth
 │   ├── neural_operator_best.pth
-│   └── diffusion_unet_best.pth
+│   └── diffusion_best.pth
 │
 ├── docker/
 │   ├── Dockerfile               # Multi-stage CUDA 12.1 production image

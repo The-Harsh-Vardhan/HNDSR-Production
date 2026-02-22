@@ -394,7 +394,7 @@ def train_diffusion(
             logger.info("Early stopping at epoch %d", epoch + 1)
             break
 
-    ckpt_path = config.checkpoint_dir / "diffusion_unet_best.pth"
+    ckpt_path = config.checkpoint_dir / "diffusion_best.pth"
     torch.save(model.state_dict(), ckpt_path)
     tracker.log_model_checkpoint(str(ckpt_path), "diffusion_unet")
 

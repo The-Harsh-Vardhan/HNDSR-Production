@@ -47,7 +47,7 @@ def generate_checkpoints(output_dir: Path) -> None:
     models = {
         "autoencoder_best.pth": HNDSRAutoencoder(in_ch=3, latent_ch=64),
         "neural_operator_best.pth": HNDSRNeuralOperator(in_ch=3, latent_ch=64, fno_layers=4, modes=12),
-        "diffusion_unet_best.pth": HNDSRDiffusionUNet(latent_ch=64, t_dim=128),
+        "diffusion_best.pth": HNDSRDiffusionUNet(latent_ch=64, t_dim=128),
     }
 
     total_params = 0

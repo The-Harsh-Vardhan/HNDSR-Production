@@ -247,7 +247,7 @@ async def lifespan(app: FastAPI):
             model_dir=model_dir,
             autoencoder_ckpt="autoencoder_best.pth",
             neural_operator_ckpt="neural_operator_best.pth",
-            diffusion_ckpt="diffusion_unet_best.pth",
+            diffusion_ckpt="diffusion_best.pth",
             device=device,
             use_fp16=CONFIG.use_fp16,
         )

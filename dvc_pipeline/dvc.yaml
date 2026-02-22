@@ -118,7 +118,7 @@ stages:
       - diffusion
       - global
     outs:
-      - ./checkpoints/diffusion_unet_best.pth
+      - ./checkpoints/diffusion_best.pth
     plots:
       - ./checkpoints/diffusion_metrics.json:
           cache: false
@@ -136,7 +136,7 @@ stages:
     deps:
       - ./checkpoints/autoencoder_best.pth
       - ./checkpoints/neural_operator_best.pth
-      - ./checkpoints/diffusion_unet_best.pth
+      - ./checkpoints/diffusion_best.pth
       - ${data.processed_dir}/test/HR
       - ${data.processed_dir}/test/LR_4x
     metrics:

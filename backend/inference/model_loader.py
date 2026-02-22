@@ -90,7 +90,7 @@ class HNDSRModelLoader:
         model_dir: Path,
         autoencoder_ckpt: str = "autoencoder_best.pth",
         neural_operator_ckpt: str = "neural_operator_best.pth",
-        diffusion_ckpt: str = "diffusion_unet_best.pth",
+        diffusion_ckpt: str = "diffusion_best.pth",
         device: torch.device = torch.device("cpu"),
         use_fp16: bool = True,
     ) -> None:

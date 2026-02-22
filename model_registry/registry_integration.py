@@ -110,7 +110,7 @@ class ModelRegistry:
         Registers all three HNDSR components as a single model version:
           - autoencoder_best.pth
           - neural_operator_best.pth
-          - diffusion_unet_best.pth
+          - diffusion_best.pth
 
         Args:
             checkpoint_dir: Directory containing the three checkpoint files.
@@ -128,7 +128,7 @@ class ModelRegistry:
         required_files = [
             "autoencoder_best.pth",
             "neural_operator_best.pth",
-            "diffusion_unet_best.pth",
+            "diffusion_best.pth",
         ]
         for fname in required_files:
             if not (ckpt_path / fname).exists():
