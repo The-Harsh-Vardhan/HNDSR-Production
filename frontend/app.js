@@ -7,7 +7,7 @@
 // If running on localhost, use local API. Otherwise, use your Hugging Face URL.
 const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
-    : 'https://YOUR_USERNAME-HNDSR.hf.space'; // <--- UPDATE THIS after deploying to Hugging Face
+    : 'https://the-harsh-vardhan-hndsr-production.hf.space';
 const POLL_INTERVAL = 5000; // 5 seconds
 
 // DOM Elements
