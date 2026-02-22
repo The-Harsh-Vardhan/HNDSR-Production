@@ -53,7 +53,9 @@ import re
 import torch
 import torchvision.transforms.functional as TF
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from PIL import Image
 
 # Register AVIF / HEIF support (iPhones, modern browsers)
@@ -70,7 +72,7 @@ from prometheus_client import (
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -128,6 +130,24 @@ class InferenceRequest(BaseModel):
     ddim_steps: Optional[int] = Field(default=None, ge=10, le=200, description="DDIM sampling steps (default: server config)")
     seed: Optional[int] = Field(default=None, description="Random seed for reproducibility")
     return_metadata: bool = Field(default=True)
+
+    @field_validator("scale_factor", mode="before")
+    @classmethod
+    def normalize_scale_factor(cls, value):
+        if value is None:
+            return 4
+        if isinstance(value, str) and value.strip() == "":
+            return 4
+        return value
+
+    @field_validator("ddim_steps", mode="before")
+    @classmethod
+    def normalize_ddim_steps(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
 
 class InferenceResponse(BaseModel):
@@ -323,6 +343,31 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    logger.warning(
+        "Request validation failed: %s %s (%d error(s))",
+        request.method,
+        request.url.path,
+        len(errors),
+    )
+    if errors:
+        first = errors[0]
+        logger.warning(
+            "First validation error loc=%s msg=%s",
+            first.get("loc"),
+            first.get("msg"),
+        )
+    return JSONResponse(
+        status_code=422,
+        content={
+            "message": "Request validation failed. Check payload fields and types.",
+            "detail": errors,
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

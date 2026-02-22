@@ -28,6 +28,7 @@ const navLinks        = $id('navLinks');
 
 let currentImageB64 = null;
 let outputImageB64  = null;
+const CONVERT_TO_PNG_TYPES = new Set(['image/avif', 'image/bmp', 'image/tiff']);
 
 // ── Navbar ───────────────────────────────────────────────────────────
 navToggle.addEventListener('click', () => navLinks.classList.toggle('open'));
@@ -80,30 +81,44 @@ uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag
 uploadArea.addEventListener('drop', (e) => {
     e.preventDefault();
     uploadArea.classList.remove('drag-over');
-    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) void handleFile(e.dataTransfer.files[0]);
 });
 fileInput.addEventListener('change', () => {
-    if (fileInput.files.length) handleFile(fileInput.files[0]);
+    if (fileInput.files.length) void handleFile(fileInput.files[0]);
 });
 
-function handleFile(file) {
+async function handleFile(file) {
     const OK_TYPES = [
         'image/png', 'image/jpeg', 'image/webp',
         'image/avif', 'image/bmp', 'image/tiff',
     ];
+    hideError();
+    inferBtn.disabled = true;
+    currentImageB64 = null;
     if (!file.type.startsWith('image/')) return showError('Please select an image file.');
     if (!OK_TYPES.includes(file.type))   return showError(`Unsupported format (${file.type}). Use PNG, JPEG, or WebP.`);
     if (file.size > 20 * 1024 * 1024)    return showError('File too large. Max 20 MB.');
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        previewImage.src = e.target.result;
+    try {
+        let previewDataUrl = await fileToDataUrl(file);
+        if (CONVERT_TO_PNG_TYPES.has(file.type)) {
+            previewDataUrl = await convertDataUrlToPng(previewDataUrl);
+        }
+
+        const imageB64 = extractBase64FromDataUrl(previewDataUrl);
+        if (!imageB64) {
+            throw new Error("Could not prepare image payload.");
+        }
+
+        previewImage.src = previewDataUrl;
         previewImage.classList.remove('hidden');
         uploadPlaceholder.classList.add('hidden');
-        currentImageB64 = e.target.result.split(',')[1];
+        currentImageB64 = imageB64;
         inferBtn.disabled = false;
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+        const msg = err && err.message ? err.message : 'Image conversion failed.';
+        showError(`Could not process this image: ${msg}`);
+    }
 }
 
 // ── Inference ────────────────────────────────────────────────────────
@@ -119,12 +134,17 @@ async function runInference() {
 
     const body = {
         image: currentImageB64,
-        scale_factor: parseInt($id('scaleSelect').value),
-        ddim_steps:   parseInt($id('ddimSteps').value),
+        scale_factor: sanitizeInteger($id('scaleSelect').value, 4, 2, 8),
+        ddim_steps:   sanitizeInteger($id('ddimSteps').value, 10, 10, 200),
         return_metadata: true,
     };
-    const seedVal = $id('seedInput').value;
-    if (seedVal) body.seed = parseInt(seedVal);
+    const seedVal = $id('seedInput').value.trim();
+    if (seedVal !== '') {
+        const seed = Number.parseInt(seedVal, 10);
+        if (Number.isInteger(seed)) {
+            body.seed = seed;
+        }
+    }
 
     try {
         const res = await fetch(`${API_BASE}/infer`, {
@@ -135,11 +155,14 @@ async function runInference() {
 
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            const d = err.detail || `HTTP ${res.status}`;
+            const detail = formatErrorDetail(err.detail);
+            const msg = typeof err.message === 'string' ? err.message : '';
+            const d = detail || msg || `HTTP ${res.status}`;
             if (res.status === 429) return showError(`Rate limited: ${d}`);
             if (res.status === 503) return showError(`Server busy: ${d}`);
             if (res.status === 413) return showError(`Image too large: ${d}`);
             if (res.status === 504) return showError(`Timeout: ${d}`);
+            if (res.status === 422) return showError(`Validation error: ${d}`);
             return showError(`Error: ${d}`);
         }
 
@@ -191,4 +214,76 @@ function showError(msg) {
 }
 function hideError() {
     errorBanner.classList.add('hidden');
+}
+
+function sanitizeInteger(rawValue, fallback, min, max) {
+    const parsed = Number.parseInt(rawValue, 10);
+    if (!Number.isInteger(parsed)) return fallback;
+    if (parsed < min || parsed > max) return fallback;
+    return parsed;
+}
+
+function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = () => reject(new Error('Failed to read input file.'));
+        reader.readAsDataURL(file);
+    });
+}
+
+function convertDataUrlToPng(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || img.width;
+            canvas.height = img.naturalHeight || img.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                reject(new Error('Canvas is not available in this browser.'));
+                return;
+            }
+            ctx.drawImage(img, 0, 0);
+            resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => reject(new Error('Browser could not decode this image format.'));
+        img.src = dataUrl;
+    });
+}
+
+function extractBase64FromDataUrl(dataUrl) {
+    if (typeof dataUrl !== 'string') return null;
+    const splitIdx = dataUrl.indexOf(',');
+    if (splitIdx === -1) return null;
+    const payload = dataUrl.slice(splitIdx + 1).trim();
+    return payload || null;
+}
+
+function formatErrorDetail(detail) {
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        const rows = detail
+            .map(formatValidationEntry)
+            .filter((line) => line.length > 0);
+        return rows.length ? rows.join('; ') : 'Request validation failed.';
+    }
+    if (detail && typeof detail === 'object') {
+        try {
+            return JSON.stringify(detail);
+        } catch {
+            return 'Request validation failed.';
+        }
+    }
+    return '';
+}
+
+function formatValidationEntry(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    const loc = Array.isArray(entry.loc) ? entry.loc.join('.') : '';
+    const msg = typeof entry.msg === 'string' ? entry.msg : '';
+    if (!loc && !msg) return '';
+    if (!loc) return msg;
+    if (!msg) return loc;
+    return `${loc}: ${msg}`;
 }
