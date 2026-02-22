@@ -1,10 +1,14 @@
-# Python
+# ═══════════════════════════════════════════════════════════════
+# HNDSR Production — .gitignore
+# ═══════════════════════════════════════════════════════════════
+
+# ── Python ────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyd
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -20,43 +24,82 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pip-log.txt
+pip-delete-this-directory.txt
+*.manifest
+*.spec
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# ── Virtual Environments ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+ENV/
+
+# ── Jupyter Notebooks ────────────────────────────────────────
+.ipynb_checkpoints/
 */.ipynb_checkpoints/*
+*.ipynb_metadata
 
-# ML / AI / Data
+# ── ML / AI / Data ───────────────────────────────────────────
 data/raw/
 data/processed/
 checkpoints/
 mlruns/
+mlflow.db
 .dvc/cache
 .dvc/tmp
+.dvc/lock
 /evaluation_results/
 /outputs/
 /results/
+wandb/
+*.onnx
+*.tflite
 
-# Environments
-.env
-.venv
-venv/
-ENV/
+# ── Testing ──────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
 
-# IDEs
+# ── Type Checking / Linting ──────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# ── IDEs & Editors ───────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+*.sublime-workspace
+*.sublime-project
 
-# OS
+# ── OS Files ─────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
 
-# Logs
+# ── Logs ─────────────────────────────────────────────────────
 *.log
 logs/
-wandb/
 
-# Docker
+# ── Docker ───────────────────────────────────────────────────
 .docker_temp/
+docker/logs/
+
+# ── Secrets (never commit) ───────────────────────────────────
+*.pem
+*.key
+secrets/

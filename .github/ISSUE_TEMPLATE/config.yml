@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: API Documentation
+    url: https://the-harsh-vardhan-hndsr-production.hf.space/docs
+    about: Explore the live Swagger API docs
+  - name: Live Demo
+    url: https://hndsr.vercel.app
+    about: Try the HNDSR frontend demo

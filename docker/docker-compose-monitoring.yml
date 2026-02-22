@@ -1,0 +1,43 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# HNDSR Monitoring Setup (Online System)
+# ═══════════════════════════════════════════════════════════════════════════
+# This compose file starts ONLY the observability stack, 
+# pointing to your live production API on Hugging Face.
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: "3.8"
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: hndsr-prometheus-prod
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus-prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/alerting_rules.yml:/etc/prometheus/alerting_rules.yml:ro
+      - prometheus-prod-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: hndsr-grafana-prod
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=hndsr-admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-prod-data:/var/lib/grafana
+      - ../observability/grafana_dashboard.json:/var/lib/grafana/dashboards/hndsr.json:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-prod-data:
+  grafana-prod-data:

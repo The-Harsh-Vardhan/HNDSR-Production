@@ -1,0 +1,22 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# PROD Prometheus Configuration for HNDSR (Online)
+# ═══════════════════════════════════════════════════════════════════════════
+# Scrapes the Hugging Face Space endpoint every 15s.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerting_rules.yml"
+
+scrape_configs:
+  - job_name: "hndsr-production"
+    metrics_path: "/metrics"
+    scheme: https
+    static_configs:
+      - targets: ["the-harsh-vardhan-hndsr-production.hf.space"]
+    # Hugging Face Spaces often require basic auth or specific headers if private,
+    # but for public spaces, this simple config should work.
+    tls_config:
+      insecure_skip_verify: false
