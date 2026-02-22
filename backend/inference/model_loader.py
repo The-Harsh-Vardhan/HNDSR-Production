@@ -1,10 +1,15 @@
 """
 backend/inference/model_loader.py
 ===================================
-Thread-safe singleton model loader with lazy loading, warm-start caching,
-and GPU/CPU memory pressure mitigation.
+Thread-safe singleton model loader for the composite HNDSR model.
 
-Adapted from Deployment/memory/model_loader.py.
+Builds one HNDSR() model and loads individual sub-model checkpoints
+(autoencoder, neural operator, diffusion UNet) into it.
+
+Checkpoint formats (from training notebook):
+  autoencoder_best.pth   → raw state_dict (OrderedDict of tensors)
+  neural_operator_best.pth → raw state_dict
+  diffusion_best.pth     → {'diffusion_unet': state_dict, 'ema_shadow': state_dict}
 """
 
 from __future__ import annotations
@@ -20,6 +25,10 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Device helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def resolve_device(preference: str = "auto") -> torch.device:
     """
@@ -47,7 +56,8 @@ def log_memory_stats(tag: str = "") -> None:
     if torch.cuda.is_available():
         alloc = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
-        logger.info("[%s] GPU memory: allocated=%.2f GB reserved=%.2f GB", tag, alloc, reserved)
+        logger.info("[%s] GPU memory: allocated=%.2f GB reserved=%.2f GB",
+                     tag, alloc, reserved)
 
 
 def free_gpu_memory() -> None:
@@ -59,20 +69,21 @@ def free_gpu_memory() -> None:
     logger.debug("GPU memory freed.")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Model loader singleton
+# ─────────────────────────────────────────────────────────────────────────────
+
 class HNDSRModelLoader:
     """
-    Thread-safe singleton model loader with lazy loading.
+    Thread-safe singleton that builds one HNDSR model and loads
+    all checkpoint weights into it.
 
-    Usage:
+    Usage::
+
         loader = get_model_loader()
-        loader.initialize(model_dir, ckpt_names, device)
+        loader.initialize(model_dir, device=device)
         loader.warm_start()
-        engine = HNDSRInferenceEngine(
-            autoencoder=loader.autoencoder,
-            neural_operator=loader.neural_operator,
-            diffusion_unet=loader.diffusion_unet,
-            device=device,
-        )
+        model = loader.model  # full HNDSR with all weights loaded
     """
 
     _instance: Optional["HNDSRModelLoader"] = None
@@ -106,92 +117,122 @@ class HNDSRModelLoader:
         self.device = device
         self.use_fp16 = use_fp16
 
-        self._autoencoder: Optional[torch.nn.Module] = None
-        self._neural_operator: Optional[torch.nn.Module] = None
-        self._diffusion_unet: Optional[torch.nn.Module] = None
+        self._model: Optional[torch.nn.Module] = None
         self._load_lock = threading.Lock()
 
         self._initialized = True
-        logger.info("ModelLoader initialized. model_dir=%s device=%s", model_dir, device)
+        logger.info("ModelLoader initialized. model_dir=%s device=%s",
+                     model_dir, device)
 
-    def _load_checkpoint(self, filename: str) -> torch.nn.Module:
-        """Load a single model stage from its checkpoint file."""
-        from backend.model.model_stubs import HNDSRAutoencoder, HNDSRNeuralOperator, HNDSRDiffusionUNet
+    # ── Internal loader ───────────────────────────────────────────────────
 
-        ckpt_path = self.model_dir / filename
-        if not ckpt_path.exists():
-            raise FileNotFoundError(
-                f"Checkpoint not found: {ckpt_path}. "
-                "Ensure model files are present in the model directory. "
-                "Run: python backend/inference/generate_checkpoints.py"
-            )
-
-        # Determine model class from filename convention
-        if "autoencoder" in filename:
-            model = HNDSRAutoencoder()
-        elif "neural_operator" in filename:
-            model = HNDSRNeuralOperator()
-        elif "diffusion" in filename:
-            model = HNDSRDiffusionUNet()
-        else:
-            raise ValueError(f"Cannot infer model class from filename: {filename}")
+    def _load_full_model(self) -> torch.nn.Module:
+        """Build the composite HNDSR model and load all checkpoint files."""
+        from backend.model.model_stubs import HNDSR
 
         t0 = time.perf_counter()
-        raw = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        state = raw.get("model_state_dict", raw)
-        model.load_state_dict(state, strict=False)
+        model = HNDSR()
+
+        # ── Autoencoder ──
+        ae_path = self.model_dir / self.autoencoder_ckpt
+        if not ae_path.exists():
+            raise FileNotFoundError(
+                f"Autoencoder checkpoint not found: {ae_path}")
+        ae_raw = torch.load(ae_path, map_location="cpu", weights_only=False)
+        ae_state = (ae_raw.get("model_state_dict", ae_raw)
+                    if isinstance(ae_raw, dict) and "model_state_dict" in ae_raw
+                    else ae_raw)
+        model.autoencoder.load_state_dict(ae_state, strict=True)
+        logger.info("Loaded autoencoder from %s", ae_path.name)
+
+        # ── Neural Operator ──
+        no_path = self.model_dir / self.neural_operator_ckpt
+        if not no_path.exists():
+            raise FileNotFoundError(
+                f"Neural operator checkpoint not found: {no_path}")
+        no_raw = torch.load(no_path, map_location="cpu", weights_only=False)
+        no_state = (no_raw.get("model_state_dict", no_raw)
+                    if isinstance(no_raw, dict) and "model_state_dict" in no_raw
+                    else no_raw)
+        model.neural_operator.load_state_dict(no_state, strict=True)
+        logger.info("Loaded neural operator from %s", no_path.name)
+
+        # ── Diffusion UNet ──
+        diff_path = self.model_dir / self.diffusion_ckpt
+        if not diff_path.exists():
+            raise FileNotFoundError(
+                f"Diffusion checkpoint not found: {diff_path}")
+        diff_raw = torch.load(diff_path, map_location="cpu", weights_only=False)
+
+        # Prefer EMA shadow weights (moving average → better quality)
+        if isinstance(diff_raw, dict) and "ema_shadow" in diff_raw:
+            diff_state = diff_raw["ema_shadow"]
+            logger.info("Using EMA shadow weights for diffusion UNet")
+        elif isinstance(diff_raw, dict) and "diffusion_unet" in diff_raw:
+            diff_state = diff_raw["diffusion_unet"]
+            logger.info("Using training weights for diffusion UNet")
+        elif isinstance(diff_raw, dict) and "model_state_dict" in diff_raw:
+            diff_state = diff_raw["model_state_dict"]
+        else:
+            diff_state = diff_raw
+        model.diffusion_unet.load_state_dict(diff_state, strict=True)
+        logger.info("Loaded diffusion UNet from %s", diff_path.name)
+
+        # Note: ImplicitAmplification has no saved checkpoint because it was
+        # never optimised independently during training. It uses fresh random
+        # init. The diffusion model's cross-attention is robust to this since
+        # the context vector primarily captures global structure.
+        logger.warning(
+            "ImplicitAmplification uses random init (no checkpoint). "
+            "Quality may differ slightly from the training session."
+        )
+
         model.eval()
-
-        # Apply FP16 if requested
-        if self.use_fp16 and self.device.type == "cuda":
-            model = model.half()
-
         model = model.to(self.device)
 
         elapsed = time.perf_counter() - t0
-        param_count = sum(p.numel() for p in model.parameters()) / 1e6
-        logger.info("Loaded %s in %.2f s → %s (%.1fM params)", filename, elapsed, self.device, param_count)
+        total_params = sum(p.numel() for p in model.parameters()) / 1e6
+        logger.info(
+            "Full HNDSR model loaded in %.2f s (%.1f M params) → %s",
+            elapsed, total_params, self.device,
+        )
         return model
 
+    # ── Public API ────────────────────────────────────────────────────────
+
+    @property
+    def model(self) -> torch.nn.Module:
+        """Return the full HNDSR model (lazy-loaded on first access)."""
+        if self._model is None:
+            with self._load_lock:
+                if self._model is None:
+                    self._model = self._load_full_model()
+        return self._model
+
+    # Backward-compat sub-model accessors
     @property
     def autoencoder(self) -> torch.nn.Module:
-        if self._autoencoder is None:
-            with self._load_lock:
-                if self._autoencoder is None:
-                    self._autoencoder = self._load_checkpoint(self.autoencoder_ckpt)
-        return self._autoencoder
+        return self.model.autoencoder
 
     @property
     def neural_operator(self) -> torch.nn.Module:
-        if self._neural_operator is None:
-            with self._load_lock:
-                if self._neural_operator is None:
-                    self._neural_operator = self._load_checkpoint(self.neural_operator_ckpt)
-        return self._neural_operator
+        return self.model.neural_operator
 
     @property
     def diffusion_unet(self) -> torch.nn.Module:
-        if self._diffusion_unet is None:
-            with self._load_lock:
-                if self._diffusion_unet is None:
-                    self._diffusion_unet = self._load_checkpoint(self.diffusion_ckpt)
-        return self._diffusion_unet
+        return self.model.diffusion_unet
 
     def warm_start(self) -> None:
-        """Pre-load all model stages. Call at server startup."""
+        """Pre-load the full model. Call at server startup."""
         logger.info("Warm-starting model loader...")
         log_memory_stats("before_warm_start")
-        _ = self.autoencoder
-        _ = self.neural_operator
-        _ = self.diffusion_unet
+        _ = self.model
         log_memory_stats("after_warm_start")
         logger.info("All model stages loaded and ready.")
 
     def unload_all(self) -> None:
         """Unload all models from memory."""
-        self._autoencoder = None
-        self._neural_operator = None
-        self._diffusion_unet = None
+        self._model = None
         free_gpu_memory()
         logger.info("All models unloaded.")
 

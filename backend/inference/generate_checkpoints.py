@@ -31,9 +31,10 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.model.model_stubs import (
-    HNDSRAutoencoder,
-    HNDSRNeuralOperator,
-    HNDSRDiffusionUNet,
+    HNDSR,
+    LatentAutoencoder,
+    NeuralOperator,
+    DiffusionUNet,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -41,53 +42,56 @@ logger = logging.getLogger(__name__)
 
 
 def generate_checkpoints(output_dir: Path) -> None:
-    """Generate random-init checkpoint files for all 3 HNDSR stages."""
+    """Generate random-init checkpoint files matching training save format."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    models = {
-        "autoencoder_best.pth": HNDSRAutoencoder(in_ch=3, latent_ch=64),
-        "neural_operator_best.pth": HNDSRNeuralOperator(in_ch=3, latent_ch=64, fno_layers=4, modes=12),
-        "diffusion_best.pth": HNDSRDiffusionUNet(latent_ch=64, t_dim=128),
-    }
+    model = HNDSR()
 
-    total_params = 0
-    for filename, model in models.items():
-        param_count = sum(p.numel() for p in model.parameters())
-        total_params += param_count
-        filepath = output_dir / filename
+    # Save autoencoder as raw state_dict (matches training notebook)
+    ae_path = output_dir / "autoencoder_best.pth"
+    torch.save(model.autoencoder.state_dict(), ae_path)
+    ae_params = sum(p.numel() for p in model.autoencoder.parameters())
+    logger.info("Saved autoencoder_best.pth: %.1fM params, %.1f MB",
+                ae_params / 1e6, ae_path.stat().st_size / 1e6)
 
-        # Save as state_dict (not full model — safe against arbitrary code execution)
-        torch.save(
-            {"model_state_dict": model.state_dict()},
-            filepath,
-        )
+    # Save neural operator as raw state_dict
+    no_path = output_dir / "neural_operator_best.pth"
+    torch.save(model.neural_operator.state_dict(), no_path)
+    no_params = sum(p.numel() for p in model.neural_operator.parameters())
+    logger.info("Saved neural_operator_best.pth: %.1fM params, %.1f MB",
+                no_params / 1e6, no_path.stat().st_size / 1e6)
 
-        size_mb = filepath.stat().st_size / 1e6
-        logger.info(
-            "Saved %s: %.1fM params, %.1f MB",
-            filename, param_count / 1e6, size_mb,
-        )
+    # Save diffusion as nested dict (matches training notebook format)
+    diff_path = output_dir / "diffusion_best.pth"
+    torch.save({
+        "diffusion_unet": model.diffusion_unet.state_dict(),
+        "ema_shadow": model.diffusion_unet.state_dict(),  # use same for dummy
+    }, diff_path)
+    diff_params = sum(p.numel() for p in model.diffusion_unet.parameters())
+    logger.info("Saved diffusion_best.pth: %.1fM params, %.1f MB",
+                diff_params / 1e6, diff_path.stat().st_size / 1e6)
 
-    logger.info(
-        "Total: %.1fM params across 3 stages",
-        total_params / 1e6,
-    )
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info("Total: %.1fM params across full HNDSR model", total_params / 1e6)
     logger.info("Checkpoints saved to: %s", output_dir.resolve())
 
-    # Verification: try loading one back
+    # Verification: load back and test forward pass
     logger.info("Verifying checkpoint loading...")
-    test_model = HNDSRAutoencoder()
-    raw = torch.load(output_dir / "autoencoder_best.pth", weights_only=True)
-    test_model.load_state_dict(raw["model_state_dict"])
-    test_model.eval()
-
-    # Quick forward pass test
+    from backend.inference.model_loader import HNDSRModelLoader
+    loader = HNDSRModelLoader.__new__(HNDSRModelLoader)
+    loader._initialized = False
+    loader.initialize(
+        model_dir=output_dir,
+        device=torch.device("cpu"),
+        use_fp16=False,
+    )
+    test_model = loader._load_full_model()
     dummy = torch.randn(1, 3, 64, 64)
     with torch.no_grad():
-        recon, latent = test_model(dummy)
+        out = test_model.super_resolve(dummy, scale_factor=2, num_inference_steps=2)
     logger.info(
-        "Verification PASSED: input=%s → latent=%s → recon=%s",
-        list(dummy.shape), list(latent.shape), list(recon.shape),
+        "Verification PASSED: input=%s → output=%s",
+        list(dummy.shape), list(out.shape),
     )
 
 

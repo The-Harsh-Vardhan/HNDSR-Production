@@ -260,15 +260,11 @@ async def lifespan(app: FastAPI):
         logger.error("=" * 60)
         raise SystemExit(1)
 
-    # Create inference engine
+    # Create inference engine (uses composite HNDSR model)
     engine = HNDSRInferenceEngine(
-        autoencoder=loader.autoencoder,
-        neural_operator=loader.neural_operator,
-        diffusion_unet=loader.diffusion_unet,
+        model=loader.model,
         device=device,
-        use_fp16=CONFIG.use_fp16,
         ddim_steps=CONFIG.ddim_steps,
-        ddim_eta=0.0,
         max_concurrent=CONFIG.max_concurrent_inferences,
     )
 
@@ -523,13 +519,17 @@ def _run_real_inference(
     """
     Run REAL HNDSR inference synchronously (called from thread pool).
 
-    This is NOT a placeholder. It runs:
-      Stage 2: Neural Operator (FNO) → structural prior
-      Stage 3: DDIM reverse diffusion (50 steps)
-      Stage 1: Autoencoder decoder → HR image
+    Pipeline (inside HNDSR.super_resolve):
+      1. Bicubic upscale LR → target size
+      2. Neural Operator (FNO) → structural prior
+      3. Resize prior to latent spatial dimensions
+      4. ImplicitAmplification (scale-conditioned gain)
+      5. GAP pool → 1-D context vector
+      6. DDIM reverse diffusion
+      7. Autoencoder decode latent → HR image
 
     For large images, uses the tile processor with Hann-window stitching
-    to avoid GPU OOM. The output is in [-1, 1] range, (3, H, W) tensor.
+    to avoid GPU OOM.  The output is in [-1, 1] range, (3, H, W) tensor.
     """
     if seed is not None:
         torch.manual_seed(seed)
@@ -540,18 +540,13 @@ def _run_real_inference(
     tile_proc = state.tile_processor
     hr_tensor = tile_proc.process(lr_tensor, scale=float(scale_factor), seed=seed)
 
-    # Upscale to target resolution (model outputs same spatial size as input)
+    # Crop back to exact target resolution (tile processor may pad the input)
     _, h_cur, w_cur = hr_tensor.shape
     target_h = h_in * scale_factor
     target_w = w_in * scale_factor
 
     if h_cur != target_h or w_cur != target_w:
-        hr_tensor = torch.nn.functional.interpolate(
-            hr_tensor.unsqueeze(0),
-            size=(target_h, target_w),
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze(0)
+        hr_tensor = hr_tensor[:, :target_h, :target_w]
 
     return hr_tensor
 

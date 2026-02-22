@@ -1,145 +1,129 @@
 /**
  * HNDSR Frontend — app.js
- * Handles image upload, API communication, result display, and error handling.
+ * Handles navbar, health polling, image upload, API inference, result display.
  */
 
-// --- Configuration ---
-// If running on localhost, use local API. Otherwise, use your Hugging Face URL.
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:8000'
-    : 'https://the-harsh-vardhan-hndsr-production.hf.space';
-const POLL_INTERVAL = 5000; // 5 seconds
+// ── Configuration ────────────────────────────────────────────────────
+const API_BASE =
+    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        ? 'http://localhost:8000'
+        : 'https://the-harsh-vardhan-hndsr-production.hf.space';
 
-// DOM Elements
-const fileInput = document.getElementById('fileInput');
-const uploadArea = document.getElementById('uploadArea');
-const uploadPlaceholder = document.getElementById('uploadPlaceholder');
-const previewImage = document.getElementById('previewImage');
-const inferBtn = document.getElementById('inferBtn');
-const btnText = document.getElementById('btnText');
-const btnSpinner = document.getElementById('btnSpinner');
-const resultsSection = document.getElementById('resultsSection');
-const statusBadge = document.getElementById('statusBadge');
-const statusText = document.getElementById('statusText');
-const errorBanner = document.getElementById('errorBanner');
-const errorText = document.getElementById('errorText');
-const downloadBtn = document.getElementById('downloadBtn');
+// ── DOM refs ─────────────────────────────────────────────────────────
+const $id = (id) => document.getElementById(id);
+
+const fileInput       = $id('fileInput');
+const uploadArea      = $id('uploadArea');
+const uploadPlaceholder = $id('uploadPlaceholder');
+const previewImage    = $id('previewImage');
+const inferBtn        = $id('inferBtn');
+const btnText         = $id('btnText');
+const btnSpinner      = $id('btnSpinner');
+const resultsSection  = $id('resultsSection');
+const errorBanner     = $id('errorBanner');
+const errorText       = $id('errorText');
+const downloadBtn     = $id('downloadBtn');
+const navToggle       = $id('navToggle');
+const navLinks        = $id('navLinks');
 
 let currentImageB64 = null;
-let outputImageB64 = null;
+let outputImageB64  = null;
 
-// ─────────────────────────────────────────────────────────────────────
-// Health Check
-// ─────────────────────────────────────────────────────────────────────
+// ── Navbar ───────────────────────────────────────────────────────────
+navToggle.addEventListener('click', () => navLinks.classList.toggle('open'));
 
+// Close mobile menu when a link is clicked
+navLinks.querySelectorAll('a').forEach((a) =>
+    a.addEventListener('click', () => navLinks.classList.remove('open'))
+);
+
+// Shrink navbar on scroll
+window.addEventListener('scroll', () => {
+    document.querySelector('.navbar').classList.toggle('scrolled', window.scrollY > 40);
+});
+
+// ── Health check ─────────────────────────────────────────────────────
 async function checkHealth() {
+    const heroStatus      = $id('heroStatus');
+    const heroStatusLabel = $id('heroStatusLabel');
     try {
-        const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(5000) });
+        const res  = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(8000) });
         const data = await res.json();
-
         if (data.model_loaded) {
-            statusBadge.className = 'status-badge status-online';
-            statusText.textContent = data.gpu_available
-                ? `Online • ${data.gpu_name || 'GPU'}`
-                : 'Online • CPU';
+            heroStatus.textContent      = '\u25CF';
+            heroStatus.style.color      = 'var(--success)';
+            heroStatusLabel.textContent = data.gpu_available
+                ? `Online \u2022 ${data.gpu_name || 'GPU'}`
+                : 'Online \u2022 CPU';
         } else {
-            statusBadge.className = 'status-badge status-loading';
-            statusText.textContent = 'Loading model...';
+            heroStatus.textContent      = '\u25CF';
+            heroStatus.style.color      = 'var(--warning)';
+            heroStatusLabel.textContent = 'Loading model\u2026';
         }
     } catch {
-        statusBadge.className = 'status-badge status-offline';
-        statusText.textContent = 'API Offline';
+        heroStatus.textContent      = '\u25CF';
+        heroStatus.style.color      = 'var(--danger)';
+        heroStatusLabel.textContent = 'API Offline';
     }
 }
-
 checkHealth();
 setInterval(checkHealth, 15000);
 
-// ─────────────────────────────────────────────────────────────────────
-// Upload Handling
-// ─────────────────────────────────────────────────────────────────────
-
+// ── Upload handling ──────────────────────────────────────────────────
 uploadArea.addEventListener('click', () => fileInput.click());
 
 uploadArea.addEventListener('dragover', (e) => {
     e.preventDefault();
     uploadArea.classList.add('drag-over');
 });
-
-uploadArea.addEventListener('dragleave', () => {
-    uploadArea.classList.remove('drag-over');
-});
-
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
 uploadArea.addEventListener('drop', (e) => {
     e.preventDefault();
     uploadArea.classList.remove('drag-over');
     if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
 });
-
 fileInput.addEventListener('change', () => {
     if (fileInput.files.length) handleFile(fileInput.files[0]);
 });
 
 function handleFile(file) {
-    const SUPPORTED_TYPES = [
+    const OK_TYPES = [
         'image/png', 'image/jpeg', 'image/webp',
         'image/avif', 'image/bmp', 'image/tiff',
     ];
-
-    if (!file.type.startsWith('image/')) {
-        showError('Please select an image file.');
-        return;
-    }
-
-    if (!SUPPORTED_TYPES.includes(file.type)) {
-        showError(`Unsupported format (${file.type}). Please use PNG, JPEG, or WebP.`);
-        return;
-    }
-
-    if (file.size > 20 * 1024 * 1024) {
-        showError('Image too large. Max file size: 20 MB.');
-        return;
-    }
+    if (!file.type.startsWith('image/')) return showError('Please select an image file.');
+    if (!OK_TYPES.includes(file.type))   return showError(`Unsupported format (${file.type}). Use PNG, JPEG, or WebP.`);
+    if (file.size > 20 * 1024 * 1024)    return showError('File too large. Max 20 MB.');
 
     const reader = new FileReader();
     reader.onload = (e) => {
-        const dataUrl = e.target.result;
-        previewImage.src = dataUrl;
+        previewImage.src = e.target.result;
         previewImage.classList.remove('hidden');
         uploadPlaceholder.classList.add('hidden');
-
-        // Extract base64 (remove data:image/...;base64, prefix)
-        currentImageB64 = dataUrl.split(',')[1];
+        currentImageB64 = e.target.result.split(',')[1];
         inferBtn.disabled = false;
     };
     reader.readAsDataURL(file);
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Inference
-// ─────────────────────────────────────────────────────────────────────
-
+// ── Inference ────────────────────────────────────────────────────────
 inferBtn.addEventListener('click', runInference);
 
 async function runInference() {
     if (!currentImageB64) return;
 
-    // UI: loading state
     inferBtn.disabled = true;
-    btnText.textContent = 'Inferring...';
+    btnText.textContent = 'Processing\u2026';
     btnSpinner.classList.remove('hidden');
     hideError();
 
-    const scale = parseInt(document.getElementById('scaleSelect').value);
-    const ddim = parseInt(document.getElementById('ddimSteps').value);
-    const seedVal = document.getElementById('seedInput').value;
-
     const body = {
         image: currentImageB64,
-        scale_factor: scale,
-        ddim_steps: ddim,
+        scale_factor: parseInt($id('scaleSelect').value),
+        ddim_steps:   parseInt($id('ddimSteps').value),
         return_metadata: true,
     };
+    const seedVal = $id('seedInput').value;
     if (seedVal) body.seed = parseInt(seedVal);
 
     try {
@@ -151,25 +135,15 @@ async function runInference() {
 
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            const detail = err.detail || `HTTP ${res.status}`;
-
-            if (res.status === 429) {
-                showError(`Rate limited: ${detail}. Wait before retrying.`);
-            } else if (res.status === 503) {
-                showError(`Server overloaded: ${detail}. Try again in a few seconds.`);
-            } else if (res.status === 413) {
-                showError(`Image too large: ${detail}`);
-            } else if (res.status === 504) {
-                showError(`Timeout: ${detail}`);
-            } else {
-                showError(`Error: ${detail}`);
-            }
-            return;
+            const d = err.detail || `HTTP ${res.status}`;
+            if (res.status === 429) return showError(`Rate limited: ${d}`);
+            if (res.status === 503) return showError(`Server busy: ${d}`);
+            if (res.status === 413) return showError(`Image too large: ${d}`);
+            if (res.status === 504) return showError(`Timeout: ${d}`);
+            return showError(`Error: ${d}`);
         }
 
-        const data = await res.json();
-        displayResult(data);
-
+        displayResult(await res.json());
     } catch (err) {
         showError(`Connection error: ${err.message}. Is the API running?`);
     } finally {
@@ -179,56 +153,42 @@ async function runInference() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Display Result
-// ─────────────────────────────────────────────────────────────────────
-
+// ── Display result ───────────────────────────────────────────────────
 function displayResult(data) {
     outputImageB64 = data.image;
 
-    document.getElementById('resultInput').src = previewImage.src;
-    document.getElementById('resultOutput').src = `data:image/png;base64,${data.image}`;
+    $id('resultInput').src  = previewImage.src;
+    $id('resultOutput').src = `data:image/png;base64,${data.image}`;
+    $id('inputInfo').textContent  = data.metadata?.input_size || '?';
+    $id('outputInfo').textContent = `${data.width}\u00D7${data.height}`;
 
-    document.getElementById('inputInfo').textContent =
-        `${data.metadata?.input_size || '?'}`;
-    document.getElementById('outputInfo').textContent =
-        `${data.width}×${data.height}`;
-
-    // Metadata
     if (data.metadata) {
-        document.getElementById('metaLatency').textContent = `${data.metadata.latency_ms} ms`;
-        document.getElementById('metaScale').textContent = `${data.metadata.scale_factor}×`;
-        document.getElementById('metaDDIM').textContent = data.metadata.ddim_steps;
-        document.getElementById('metaDevice').textContent = data.metadata.device || '—';
-        document.getElementById('metaModel').textContent = 'HNDSR';
-        document.getElementById('metaFP16').textContent = data.metadata.fp16 ? 'Yes' : 'No';
+        $id('metaLatency').textContent = `${data.metadata.latency_ms} ms`;
+        $id('metaScale').textContent   = `${data.metadata.scale_factor}\u00D7`;
+        $id('metaDDIM').textContent    = data.metadata.ddim_steps;
+        $id('metaDevice').textContent  = data.metadata.device || '\u2014';
+        $id('metaModel').textContent   = 'HNDSR';
+        $id('metaFP16').textContent    = data.metadata.fp16 ? 'Yes' : 'No';
     }
 
     resultsSection.classList.remove('hidden');
     resultsSection.scrollIntoView({ behavior: 'smooth' });
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Download
-// ─────────────────────────────────────────────────────────────────────
-
+// ── Download ─────────────────────────────────────────────────────────
 downloadBtn.addEventListener('click', () => {
     if (!outputImageB64) return;
-    const link = document.createElement('a');
-    link.href = `data:image/png;base64,${outputImageB64}`;
-    link.download = 'hndsr_super_resolved.png';
-    link.click();
+    const a = document.createElement('a');
+    a.href = `data:image/png;base64,${outputImageB64}`;
+    a.download = 'hndsr_super_resolved.png';
+    a.click();
 });
 
-// ─────────────────────────────────────────────────────────────────────
-// Error Handling
-// ─────────────────────────────────────────────────────────────────────
-
+// ── Error helpers ────────────────────────────────────────────────────
 function showError(msg) {
     errorText.textContent = msg;
     errorBanner.classList.remove('hidden');
 }
-
 function hideError() {
     errorBanner.classList.add('hidden');
 }

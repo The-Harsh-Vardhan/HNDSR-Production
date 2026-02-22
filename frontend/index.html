@@ -4,41 +4,167 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HNDSR — Satellite Super-Resolution</title>
-    <meta name="description" content="HNDSR: Hybrid Neural Operator-Diffusion Super-Resolution for satellite imagery">
+    <meta name="description" content="HNDSR: Hybrid Neural Operator-Diffusion Super-Resolution for satellite imagery. Production-grade deep learning pipeline.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <!-- ═══════════════ Navbar ═══════════════ -->
+    <nav class="navbar" id="navbar">
+        <div class="nav-inner">
+            <a href="#hero" class="nav-logo">
+                <span class="nav-logo-icon">&#x1F6F0;&#xFE0F;</span>
+                <span class="nav-logo-text">HNDSR</span>
+            </a>
+            <ul class="nav-links" id="navLinks">
+                <li><a href="#pipeline">Pipeline</a></li>
+                <li><a href="#demo">Try It</a></li>
+                <li><a href="#limitations">Limitations</a></li>
+                <li><a href="https://github.com/the-harsh-vardhan/HNDSR-in-Production" target="_blank" class="nav-github">GitHub</a></li>
+            </ul>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
     <div class="app">
-        <!-- Header -->
-        <header class="header">
-            <div class="header-content">
-                <div class="logo">
-                    <div class="logo-icon">🛰️</div>
-                    <div>
-                        <h1>HNDSR</h1>
-                        <p class="subtitle">Hybrid Neural Operator–Diffusion Super-Resolution</p>
+        <!-- ═══════════════ Hero ═══════════════ -->
+        <section class="hero" id="hero">
+            <div class="hero-content">
+                <div class="hero-badge">Mini Project &bull; 5th Semester &bull; IIIT Nagpur</div>
+                <h1 class="hero-title">
+                    Hybrid Neural Operator&#x2013;Diffusion<br>
+                    <span class="gradient-text">Super-Resolution</span>
+                </h1>
+                <p class="hero-sub">
+                    A production-grade deep-learning pipeline that combines
+                    <strong>Fourier Neural Operators</strong> with
+                    <strong>Denoising Diffusion</strong> to upscale satellite imagery
+                    while preserving fine structural detail.
+                </p>
+                <div class="hero-actions">
+                    <a href="#demo" class="btn-primary">Try Demo</a>
+                    <a href="#pipeline" class="btn-outline">How It Works</a>
+                </div>
+                <div class="hero-stats">
+                    <div class="stat"><span class="stat-val">3</span><span class="stat-label">Model Stages</span></div>
+                    <div class="stat"><span class="stat-val">~12M</span><span class="stat-label">Parameters</span></div>
+                    <div class="stat"><span class="stat-val">2&#x2013;8&times;</span><span class="stat-label">Upscaling</span></div>
+                    <div class="stat">
+                        <span class="stat-val" id="heroStatus">&#x25CF;</span>
+                        <span class="stat-label" id="heroStatusLabel">Checking&hellip;</span>
                     </div>
                 </div>
-                <div class="status-badge" id="statusBadge">
-                    <span class="status-dot"></span>
-                    <span id="statusText">Checking...</span>
+            </div>
+        </section>
+
+        <!-- ═══════════════ Pipeline ═══════════════ -->
+        <section class="section" id="pipeline">
+            <h2 class="section-title">How the Pipeline Works</h2>
+            <p class="section-sub">
+                HNDSR is a three-stage model. Each stage handles a different
+                aspect of super-resolution and they are trained sequentially.
+            </p>
+
+            <div class="pipeline-flow">
+                <!-- Stage 1 -->
+                <div class="pipeline-card">
+                    <div class="pipeline-num">1</div>
+                    <div class="pipeline-icon">&#x1F9E9;</div>
+                    <h3>Latent Autoencoder</h3>
+                    <p>
+                        Compresses 3-channel RGB images into a <strong>128-channel latent space</strong>
+                        at 8&times; reduced spatial resolution. The encoder uses strided convolutions
+                        and residual blocks; the decoder mirrors this with transposed convolutions.
+                    </p>
+                    <div class="pipeline-tag">Trained first &mdash; reconstruction loss</div>
+                </div>
+
+                <div class="pipeline-arrow">&rarr;</div>
+
+                <!-- Stage 2 -->
+                <div class="pipeline-card">
+                    <div class="pipeline-num">2</div>
+                    <div class="pipeline-icon">&#x1F30A;</div>
+                    <h3>Fourier Neural Operator</h3>
+                    <p>
+                        Learns <strong>global structural priors</strong> in the frequency domain via
+                        learnable spectral convolutions. Four FNO layers with 8 Fourier modes operate
+                        on the bicubic-upscaled image to produce a rich feature map.
+                    </p>
+                    <div class="pipeline-tag">Trained second &mdash; perceptual + L1 loss</div>
+                </div>
+
+                <div class="pipeline-arrow">&rarr;</div>
+
+                <!-- Stage 3 -->
+                <div class="pipeline-card">
+                    <div class="pipeline-num">3</div>
+                    <div class="pipeline-icon">&#x2728;</div>
+                    <h3>Diffusion UNet</h3>
+                    <p>
+                        A context-conditioned denoising U-Net refines the latent using
+                        <strong>cross-attention</strong> on a 1-D context vector from the FNO prior.
+                        DDIM sampling replaces the 1000-step DDPM process with ~10 fast steps.
+                    </p>
+                    <div class="pipeline-tag">Trained third &mdash; noise prediction (&epsilon;-loss)</div>
                 </div>
             </div>
-        </header>
 
-        <!-- Main Content -->
-        <main class="main">
-            <!-- Upload Section -->
-            <section class="upload-section glass-panel">
-                <h2>Upload Low-Resolution Image</h2>
+            <!-- Inference flow summary -->
+            <div class="flow-summary glass-panel">
+                <h3>Inference Flow</h3>
+                <div class="flow-steps">
+                    <div class="flow-step">
+                        <span class="flow-num">1</span>
+                        <span>Bicubic upscale LR image to target size</span>
+                    </div>
+                    <div class="flow-step">
+                        <span class="flow-num">2</span>
+                        <span>FNO extracts structural prior features</span>
+                    </div>
+                    <div class="flow-step">
+                        <span class="flow-num">3</span>
+                        <span>Resize features to latent spatial dimensions (&#xF7;8)</span>
+                    </div>
+                    <div class="flow-step">
+                        <span class="flow-num">4</span>
+                        <span>Implicit Amplification applies scale-conditioned gain</span>
+                    </div>
+                    <div class="flow-step">
+                        <span class="flow-num">5</span>
+                        <span>Global Average Pool &rarr; 128-D context vector</span>
+                    </div>
+                    <div class="flow-step">
+                        <span class="flow-num">6</span>
+                        <span>DDIM reverse diffusion conditioned on context</span>
+                    </div>
+                    <div class="flow-step">
+                        <span class="flow-num">7</span>
+                        <span>Autoencoder decodes latent &rarr; HR image</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════ Demo ═══════════════ -->
+        <section class="section" id="demo">
+            <h2 class="section-title">Try It Live</h2>
+            <p class="section-sub">
+                Upload a low-resolution satellite image and watch the HNDSR pipeline
+                super-resolve it in real time.
+            </p>
+
+            <!-- Upload -->
+            <div class="demo-panel glass-panel">
                 <div class="upload-area" id="uploadArea">
                     <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,image/avif,image/bmp,image/tiff" hidden>
                     <div class="upload-placeholder" id="uploadPlaceholder">
-                        <div class="upload-icon">📤</div>
+                        <div class="upload-icon">&#x1F4E4;</div>
                         <p>Drop satellite image here or <span class="upload-link">browse</span></p>
-                        <p class="upload-hint">PNG, JPEG, WebP, AVIF • Max 16M pixels</p>
+                        <p class="upload-hint">PNG, JPEG, WebP, AVIF &bull; Max 20 MB &bull; Auto-downscaled &gt; 512 px</p>
                     </div>
                     <img id="previewImage" class="preview-image hidden" alt="Input preview">
                 </div>
@@ -48,17 +174,17 @@
                     <div class="control-group">
                         <label for="scaleSelect">Scale Factor</label>
                         <select id="scaleSelect">
-                            <option value="2">2×</option>
-                            <option value="4" selected>4×</option>
-                            <option value="8">8×</option>
+                            <option value="2">2&times;</option>
+                            <option value="4" selected>4&times;</option>
+                            <option value="8">8&times;</option>
                         </select>
                     </div>
                     <div class="control-group">
                         <label for="ddimSteps">DDIM Steps</label>
                         <select id="ddimSteps">
-                            <option value="20">20 (Fast)</option>
-                            <option value="50" selected>50 (Default)</option>
-                            <option value="100">100 (Quality)</option>
+                            <option value="5">5 (Fast)</option>
+                            <option value="10" selected>10 (Default)</option>
+                            <option value="20">20 (Quality)</option>
                         </select>
                     </div>
                     <div class="control-group">
@@ -67,71 +193,127 @@
                     </div>
                 </div>
 
-                <button id="inferBtn" class="btn-primary" disabled>
+                <button id="inferBtn" class="btn-primary btn-full" disabled>
                     <span id="btnText">Super-Resolve</span>
                     <div id="btnSpinner" class="spinner hidden"></div>
                 </button>
-            </section>
+            </div>
 
-            <!-- Results Section -->
-            <section class="results-section glass-panel hidden" id="resultsSection">
-                <h2>Super-Resolved Output</h2>
+            <!-- Results -->
+            <div class="results-panel glass-panel hidden" id="resultsSection">
+                <h3>Result</h3>
                 <div class="result-grid">
                     <div class="result-card">
-                        <h3>Input (LR)</h3>
-                        <img id="resultInput" alt="Low resolution input">
-                        <p class="img-info" id="inputInfo"></p>
+                        <span class="result-label">Input (LR)</span>
+                        <img id="resultInput" alt="Low-resolution input">
+                        <span class="img-info" id="inputInfo"></span>
                     </div>
-                    <div class="result-arrow">→</div>
+                    <div class="result-arrow">&rarr;</div>
                     <div class="result-card">
-                        <h3>Output (HR)</h3>
+                        <span class="result-label">Output (HR)</span>
                         <img id="resultOutput" alt="Super-resolved output">
-                        <p class="img-info" id="outputInfo"></p>
+                        <span class="img-info" id="outputInfo"></span>
                     </div>
                 </div>
 
-                <!-- Metadata -->
                 <div class="metadata-grid" id="metadataGrid">
-                    <div class="meta-card">
-                        <div class="meta-label">Latency</div>
-                        <div class="meta-value" id="metaLatency">—</div>
-                    </div>
-                    <div class="meta-card">
-                        <div class="meta-label">Scale</div>
-                        <div class="meta-value" id="metaScale">—</div>
-                    </div>
-                    <div class="meta-card">
-                        <div class="meta-label">DDIM Steps</div>
-                        <div class="meta-value" id="metaDDIM">—</div>
-                    </div>
-                    <div class="meta-card">
-                        <div class="meta-label">Device</div>
-                        <div class="meta-value" id="metaDevice">—</div>
-                    </div>
-                    <div class="meta-card">
-                        <div class="meta-label">Model</div>
-                        <div class="meta-value" id="metaModel">—</div>
-                    </div>
-                    <div class="meta-card">
-                        <div class="meta-label">FP16</div>
-                        <div class="meta-value" id="metaFP16">—</div>
-                    </div>
+                    <div class="meta-card"><div class="meta-label">Latency</div><div class="meta-value" id="metaLatency">&mdash;</div></div>
+                    <div class="meta-card"><div class="meta-label">Scale</div><div class="meta-value" id="metaScale">&mdash;</div></div>
+                    <div class="meta-card"><div class="meta-label">DDIM Steps</div><div class="meta-value" id="metaDDIM">&mdash;</div></div>
+                    <div class="meta-card"><div class="meta-label">Device</div><div class="meta-value" id="metaDevice">&mdash;</div></div>
+                    <div class="meta-card"><div class="meta-label">Model</div><div class="meta-value" id="metaModel">&mdash;</div></div>
+                    <div class="meta-card"><div class="meta-label">FP16</div><div class="meta-value" id="metaFP16">&mdash;</div></div>
                 </div>
 
-                <button id="downloadBtn" class="btn-secondary">Download HR Image</button>
-            </section>
-
-            <!-- Error Display -->
-            <div class="error-banner hidden" id="errorBanner">
-                <span class="error-icon">⚠️</span>
-                <span id="errorText"></span>
-                <button class="error-close" onclick="document.getElementById('errorBanner').classList.add('hidden')">✕</button>
+                <button id="downloadBtn" class="btn-outline btn-full">&#x2B73; Download HR Image</button>
             </div>
-        </main>
 
-        <!-- Footer -->
+            <!-- Error -->
+            <div class="error-banner hidden" id="errorBanner">
+                <span class="error-icon">&#x26A0;&#xFE0F;</span>
+                <span id="errorText"></span>
+                <button class="error-close" onclick="document.getElementById('errorBanner').classList.add('hidden')">&times;</button>
+            </div>
+        </section>
+
+        <!-- ═══════════════ Limitations ═══════════════ -->
+        <section class="section" id="limitations">
+            <h2 class="section-title">Limitations &amp; Precautions</h2>
+            <p class="section-sub">
+                Please keep these constraints in mind when using the demo.
+            </p>
+
+            <div class="limits-grid">
+                <div class="limit-card glass-panel">
+                    <div class="limit-icon">&#x23F1;&#xFE0F;</div>
+                    <h3>CPU-Only Hosting</h3>
+                    <p>
+                        The demo runs on Hugging Face Spaces <strong>free-tier CPU</strong>.
+                        Expect 30&#x2013;120 s per image depending on size and scale factor.
+                        GPU inference would be ~20&times; faster.
+                    </p>
+                </div>
+                <div class="limit-card glass-panel">
+                    <div class="limit-icon">&#x1F4CF;</div>
+                    <h3>Input Size Cap</h3>
+                    <p>
+                        Images larger than <strong>512 px</strong> (longest side) are automatically
+                        downscaled before processing to stay within the 300 s timeout. For
+                        full-resolution, deploy on a GPU instance.
+                    </p>
+                </div>
+                <div class="limit-card glass-panel">
+                    <div class="limit-icon">&#x1F3AF;</div>
+                    <h3>Domain-Specific</h3>
+                    <p>
+                        The model was trained on <strong>satellite / remote-sensing imagery</strong>.
+                        It can process arbitrary photos, but quality is best on aerial and
+                        satellite images.
+                    </p>
+                </div>
+                <div class="limit-card glass-panel">
+                    <div class="limit-icon">&#x1F9EA;</div>
+                    <h3>Research Prototype</h3>
+                    <p>
+                        This is a <strong>mini-project / academic prototype</strong>, not
+                        commercial software. Output quality depends on how well the training
+                        distribution matches the input imagery.
+                    </p>
+                </div>
+                <div class="limit-card glass-panel">
+                    <div class="limit-icon">&#x1F3B2;</div>
+                    <h3>Non-Deterministic</h3>
+                    <p>
+                        Diffusion sampling adds stochasticity. Two runs with
+                        <strong>different seeds</strong> will produce slightly different outputs.
+                        Set a fixed seed for reproducibility.
+                    </p>
+                </div>
+                <div class="limit-card glass-panel">
+                    <div class="limit-icon">&#x1F50D;</div>
+                    <h3>Hallucination Risk</h3>
+                    <p>
+                        Like all generative models, the diffusion stage can
+                        <strong>hallucinate fine details</strong> that aren't in the original image.
+                        Do not rely on outputs for measurement.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════ Footer ═══════════════ -->
         <footer class="footer">
-            <p>HNDSR v1.0.0 • Autoencoder + FNO + Diffusion UNet • <a href="/docs" target="_blank">API Docs</a> • <a href="/metrics" target="_blank">Metrics</a></p>
+            <div class="footer-inner">
+                <p class="footer-brand">HNDSR v1.0.0 &mdash; Autoencoder + FNO + Diffusion UNet</p>
+                <div class="footer-links">
+                    <a href="/docs" target="_blank">API Docs</a>
+                    <span class="footer-sep">&bull;</span>
+                    <a href="/metrics" target="_blank">Prometheus Metrics</a>
+                    <span class="footer-sep">&bull;</span>
+                    <a href="https://github.com/the-harsh-vardhan/HNDSR-in-Production" target="_blank">GitHub</a>
+                </div>
+                <p class="footer-copy">&copy; 2025 Harsh Vardhan &mdash; IIIT Nagpur</p>
+            </div>
         </footer>
     </div>
 
