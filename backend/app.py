@@ -78,6 +78,10 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 
+def _env_bool(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +104,13 @@ class ServerConfig:
     # On CPU-only deployments, large inputs cause timeouts; server
     # will auto-downscale to this before inference.
     max_input_dim: int = int(os.getenv("MAX_INPUT_DIM", "512"))
+    checkpoint_manifest_path: str = os.getenv("CHECKPOINT_MANIFEST_PATH", "./checkpoints/manifest.json")
+    enforce_checkpoint_manifest: bool = _env_bool("ENFORCE_CHECKPOINT_MANIFEST", "true")
+    allow_fallback_on_invalid_ckpt: bool = _env_bool("ALLOW_FALLBACK_ON_INVALID_CKPT", "true")
+    enable_quality_probe: bool = _env_bool("ENABLE_QUALITY_PROBE", "true")
+    quality_probe_ddim_steps: int = int(os.getenv("QUALITY_PROBE_DDIM_STEPS", "10"))
+    quality_probe_input_size: int = int(os.getenv("QUALITY_PROBE_INPUT_SIZE", "64"))
+    quality_probe_min_std: float = float(os.getenv("QUALITY_PROBE_MIN_STD", "0.05"))
 
 
 CONFIG = ServerConfig()
@@ -118,6 +129,11 @@ GPU_MEMORY_USED = Gauge("hndsr_gpu_memory_used_bytes", "GPU memory used in bytes
 UPTIME = Gauge("hndsr_uptime_seconds", "Server uptime in seconds")
 RATE_LIMITED = Counter("hndsr_rate_limited_total", "Total requests rejected by rate limiter")
 BACKPRESSURE_REJECTED = Counter("hndsr_backpressure_rejected_total", "Total requests rejected by backpressure")
+FALLBACK_INFERENCES = Counter("hndsr_fallback_inferences_total", "Total bicubic fallback inferences")
+CKPT_VALIDATION_FAILURES = Counter(
+    "hndsr_checkpoint_validation_failures_total",
+    "Total checkpoint manifest/quality validation failures",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,6 +184,8 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
     active_requests: int
     inference_engine: str = "HNDSRInferenceEngine"
+    inference_mode: str = "hndsr"
+    checkpoint_validated: bool = False
 
 
 class VersionResponse(BaseModel):
@@ -179,6 +197,8 @@ class VersionResponse(BaseModel):
     cuda_version: Optional[str] = None
     model_architecture: str = "HNDSR (Autoencoder + FNO + Diffusion UNet)"
     ddim_steps: int = 50
+    checkpoint_hashes: dict[str, str] = Field(default_factory=dict)
+    checkpoint_manifest_match: bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -194,6 +214,11 @@ class AppState:
         self.engine = None  # HNDSRInferenceEngine
         self.tile_processor = None  # SatelliteTileProcessor
         self.device = None
+        self.inference_mode: str = "hndsr"
+        self.checkpoint_validated: bool = False
+        self.checkpoint_manifest_match: bool = False
+        self.fallback_reason: Optional[str] = None
+        self.checkpoint_hashes: dict[str, str] = {}
 
         self._active_requests: int = 0
         self._active_lock: threading.Lock = threading.Lock()
@@ -254,13 +279,15 @@ async def lifespan(app: FastAPI):
     from backend.inference.model_loader import resolve_device, get_model_loader
     from backend.inference.engine import HNDSRInferenceEngine
     from backend.inference.tile_processor import SatelliteTileProcessor
+    from backend.inference.quality_probe import run_quality_probe
 
     device = resolve_device(CONFIG.device)
     state.device = device
 
-    # Initialize model loader and load checkpoints
+    # Initialize model loader and checkpoint manifest validation
     loader = get_model_loader()
     model_dir = Path(CONFIG.model_dir)
+    manifest_path = Path(CONFIG.checkpoint_manifest_path)
 
     try:
         loader.initialize(
@@ -270,44 +297,117 @@ async def lifespan(app: FastAPI):
             diffusion_ckpt="diffusion_best.pth",
             device=device,
             use_fp16=CONFIG.use_fp16,
+            manifest_path=manifest_path,
         )
-        loader.warm_start()
-    except FileNotFoundError as exc:
-        logger.error("=" * 60)
-        logger.error("CHECKPOINT FILES NOT FOUND!")
-        logger.error("Run: python -m backend.inference.generate_checkpoints")
-        logger.error("Error: %s", exc)
-        logger.error("=" * 60)
+    except Exception as exc:
+        logger.error("ModelLoader initialization failed: %s", exc)
         raise SystemExit(1)
 
-    # Create inference engine (uses composite HNDSR model)
-    engine = HNDSRInferenceEngine(
-        model=loader.model,
-        device=device,
-        ddim_steps=CONFIG.ddim_steps,
-        max_concurrent=CONFIG.max_concurrent_inferences,
-    )
+    manifest_ok = loader.validate_checkpoint_manifest()
+    state.checkpoint_manifest_match = manifest_ok
+    state.checkpoint_hashes = dict(loader.checkpoint_hashes)
 
-    # Warmup
-    engine.warmup(tile_size=64, n_runs=2)
+    if CONFIG.enforce_checkpoint_manifest and not manifest_ok:
+        CKPT_VALIDATION_FAILURES.inc()
+        manifest_err = loader.manifest_validation_error or "unknown manifest validation error"
+        if CONFIG.allow_fallback_on_invalid_ckpt:
+            state.inference_mode = "bicubic_fallback"
+            state.fallback_reason = f"checkpoint_manifest_validation_failed: {manifest_err}"
+            logger.warning("Switching to fallback mode: %s", state.fallback_reason)
+        else:
+            logger.error("Checkpoint manifest validation failed and fallback is disabled.")
+            raise SystemExit(1)
 
-    # Create tile processor
-    tile_proc = SatelliteTileProcessor(
-        inference_engine=engine,
-        tile_size=CONFIG.tile_size,
-        overlap=CONFIG.tile_overlap,
-        batch_size=1,
-        max_pixels=CONFIG.max_image_pixels,
-    )
+    if state.inference_mode == "hndsr":
+        try:
+            loader.warm_start()
+        except FileNotFoundError as exc:
+            CKPT_VALIDATION_FAILURES.inc()
+            if CONFIG.allow_fallback_on_invalid_ckpt:
+                state.inference_mode = "bicubic_fallback"
+                state.fallback_reason = f"model_load_failed: {exc}"
+                logger.warning("Switching to fallback mode: %s", state.fallback_reason)
+            else:
+                logger.error("=" * 60)
+                logger.error("CHECKPOINT FILES NOT FOUND!")
+                logger.error("Run: python -m backend.inference.generate_checkpoints")
+                logger.error("Error: %s", exc)
+                logger.error("=" * 60)
+                raise SystemExit(1)
 
-    state.engine = engine
-    state.tile_processor = tile_proc
+    if state.inference_mode == "hndsr":
+        # Create inference engine (uses composite HNDSR model)
+        engine = HNDSRInferenceEngine(
+            model=loader.model,
+            device=device,
+            ddim_steps=CONFIG.ddim_steps,
+            max_concurrent=CONFIG.max_concurrent_inferences,
+        )
+
+        # Warmup
+        engine.warmup(tile_size=64, n_runs=2)
+
+        # Create tile processor
+        tile_proc = SatelliteTileProcessor(
+            inference_engine=engine,
+            tile_size=CONFIG.tile_size,
+            overlap=CONFIG.tile_overlap,
+            batch_size=1,
+            max_pixels=CONFIG.max_image_pixels,
+        )
+
+        state.engine = engine
+        state.tile_processor = tile_proc
+
+        probe_passed = True
+        if CONFIG.enable_quality_probe:
+            probe = run_quality_probe(
+                model=loader.model,
+                device=device,
+                scale_factor=2,
+                ddim_steps=CONFIG.quality_probe_ddim_steps,
+                input_size=CONFIG.quality_probe_input_size,
+                min_std=CONFIG.quality_probe_min_std,
+            )
+            logger.info("Startup quality probe: %s", probe.as_dict())
+            probe_passed = probe.passed
+
+            if not probe_passed:
+                CKPT_VALIDATION_FAILURES.inc()
+                if CONFIG.allow_fallback_on_invalid_ckpt:
+                    state.inference_mode = "bicubic_fallback"
+                    state.fallback_reason = f"quality_probe_failed: {probe.reason}"
+                    state.engine = None
+                    state.tile_processor = None
+                    loader.unload_all()
+                    logger.warning("Switching to fallback mode: %s", state.fallback_reason)
+                else:
+                    logger.error("Quality probe failed and fallback is disabled: %s", probe.reason)
+                    raise SystemExit(1)
+
+        state.checkpoint_validated = bool(
+            state.checkpoint_manifest_match and probe_passed and state.inference_mode == "hndsr"
+        )
+    else:
+        state.checkpoint_validated = False
+
     state.model_loaded = True
     state.start_time = time.time()
 
     logger.info("=" * 60)
-    logger.info("HNDSR API ready! Device=%s, DDIM=%d steps, FP16=%s",
-                device, CONFIG.ddim_steps, CONFIG.use_fp16)
+    logger.info(
+        "HNDSR API ready! mode=%s device=%s DDIM=%d FP16=%s manifest_match=%s validated=%s",
+        state.inference_mode,
+        device,
+        CONFIG.ddim_steps,
+        CONFIG.use_fp16,
+        state.checkpoint_manifest_match,
+        state.checkpoint_validated,
+    )
+    if state.inference_mode == "bicubic_fallback":
+        logger.warning("Fallback reason: %s", state.fallback_reason)
+    if state.checkpoint_hashes:
+        logger.info("Checkpoint hashes: %s", state.checkpoint_hashes)
     logger.info("=" * 60)
     yield
 
@@ -396,6 +496,8 @@ async def health():
         gpu_memory_total_mb=gpu_mem_total,
         uptime_seconds=time.time() - state.start_time,
         active_requests=state.active_requests,
+        inference_mode=state.inference_mode,
+        checkpoint_validated=state.checkpoint_validated,
     )
 
 
@@ -487,19 +589,29 @@ async def infer(request: InferenceRequest, req: Request):
     # Run inference
     state.increment_active()
     start_time = time.perf_counter()
+    output_img = None
 
     try:
-        async with asyncio.timeout(CONFIG.request_timeout_s):
-            # Run real model inference in thread pool
-            loop = asyncio.get_event_loop()
-            hr_tensor = await loop.run_in_executor(
-                None,
-                _run_real_inference,
-                lr_tensor,
-                request.scale_factor,
-                request.ddim_steps,
-                request.seed,
-            )
+        if state.inference_mode == "bicubic_fallback":
+            target_w = w * request.scale_factor
+            target_h = h * request.scale_factor
+            output_img = img.resize((target_w, target_h), Image.BICUBIC)
+            FALLBACK_INFERENCES.inc()
+        else:
+            async with asyncio.timeout(CONFIG.request_timeout_s):
+                # Run real model inference in thread pool
+                loop = asyncio.get_event_loop()
+                hr_tensor = await loop.run_in_executor(
+                    None,
+                    _run_real_inference,
+                    lr_tensor,
+                    request.scale_factor,
+                    request.ddim_steps,
+                    request.seed,
+                )
+            # Encode output tensor -> PIL image
+            hr_tensor_cpu = ((hr_tensor.clamp(-1, 1) + 1.0) / 2.0).cpu()
+            output_img = TF.to_pil_image(hr_tensor_cpu)
 
     except asyncio.TimeoutError:
         ERROR_COUNT.labels(error_type="timeout").inc()
@@ -523,9 +635,10 @@ async def infer(request: InferenceRequest, req: Request):
     INFERENCE_LATENCY.observe(latency_s)
     REQUEST_COUNT.labels(method="POST", endpoint="/infer", status="200").inc()
 
-    # Encode output tensor → base64 PNG
-    hr_tensor_cpu = ((hr_tensor.clamp(-1, 1) + 1.0) / 2.0).cpu()
-    output_img = TF.to_pil_image(hr_tensor_cpu)
+    if output_img is None:
+        ERROR_COUNT.labels(error_type="internal").inc()
+        raise HTTPException(500, detail="Inference produced no output")
+
     buf = io.BytesIO()
     output_img.save(buf, format="PNG")
     output_b64 = base64.b64encode(buf.getvalue()).decode()
@@ -544,7 +657,10 @@ async def infer(request: InferenceRequest, req: Request):
             "model": "HNDSR (Autoencoder + FNO + Diffusion UNet)",
             "fp16": CONFIG.use_fp16,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "inference_mode": state.inference_mode,
         }
+        if state.inference_mode == "bicubic_fallback":
+            metadata["fallback_reason"] = state.fallback_reason or "checkpoint_validation_failed"
 
     return InferenceResponse(
         image=output_b64,
@@ -619,4 +735,6 @@ async def version():
         cuda_available=torch.cuda.is_available(),
         cuda_version=torch.version.cuda if torch.cuda.is_available() else None,
         ddim_steps=CONFIG.ddim_steps,
+        checkpoint_hashes=state.checkpoint_hashes if state else {},
+        checkpoint_manifest_match=bool(state.checkpoint_manifest_match) if state else False,
     )

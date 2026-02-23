@@ -220,7 +220,8 @@ Liveness probe. Returns model status, device info, and GPU availability.
   "model_loaded": true,
   "gpu_available": true,
   "gpu_name": "NVIDIA RTX 4050",
-  "device": "cuda"
+  "inference_mode": "hndsr",
+  "checkpoint_validated": true
 }
 ```
 
@@ -256,7 +257,7 @@ Run super-resolution inference on a base64-encoded image.
     "device": "cuda",
     "model": "HNDSR-v1.0.0",
     "fp16": true,
-    "tiles_processed": 4
+    "inference_mode": "hndsr"
   }
 }
 ```
@@ -272,7 +273,8 @@ Prometheus-compatible metrics endpoint exposing:
 
 ### `GET /version`
 
-Returns API version, model version, and build metadata.
+Returns API version, model version, build metadata, checkpoint SHA256 hashes,
+and checkpoint manifest match status.
 
 ---
 
@@ -294,6 +296,13 @@ All configuration is via **environment variables** (12-factor app):
 | `DDIM_STEPS` | `20` | Default DDIM denoising steps |
 | `TILE_SIZE` | `64` | Tile size for large images |
 | `TILE_OVERLAP` | `8` | Overlap between tiles (Hann blending) |
+| `CHECKPOINT_MANIFEST_PATH` | `./checkpoints/manifest.json` | Path to checkpoint SHA256 manifest |
+| `ENFORCE_CHECKPOINT_MANIFEST` | `true` | Enforce manifest hash validation at startup |
+| `ALLOW_FALLBACK_ON_INVALID_CKPT` | `true` | Switch to bicubic fallback if manifest/probe fails |
+| `ENABLE_QUALITY_PROBE` | `true` | Run startup output quality sanity probe |
+| `QUALITY_PROBE_DDIM_STEPS` | `10` | DDIM steps used by startup quality probe |
+| `QUALITY_PROBE_INPUT_SIZE` | `64` | Synthetic input size used by quality probe |
+| `QUALITY_PROBE_MIN_STD` | `0.05` | Minimum output std threshold for quality probe |
 
 ---
 

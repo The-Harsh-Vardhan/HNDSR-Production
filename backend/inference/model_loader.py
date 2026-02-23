@@ -15,6 +15,8 @@ Checkpoint formats (from training notebook):
 from __future__ import annotations
 
 import gc
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -104,6 +106,7 @@ class HNDSRModelLoader:
         diffusion_ckpt: str = "diffusion_best.pth",
         device: torch.device = torch.device("cpu"),
         use_fp16: bool = True,
+        manifest_path: Optional[Path] = None,
     ) -> None:
         """Configure the loader. Call once at application startup."""
         if self._initialized:
@@ -116,13 +119,111 @@ class HNDSRModelLoader:
         self.diffusion_ckpt = diffusion_ckpt
         self.device = device
         self.use_fp16 = use_fp16
+        self.manifest_path = Path(manifest_path) if manifest_path else (self.model_dir / "manifest.json")
 
         self._model: Optional[torch.nn.Module] = None
         self._load_lock = threading.Lock()
+        self.checkpoint_hashes: dict[str, str] = {}
+        self.checkpoint_manifest_match: bool = False
+        self.manifest_validation_error: Optional[str] = None
 
         self._initialized = True
-        logger.info("ModelLoader initialized. model_dir=%s device=%s",
-                     model_dir, device)
+        logger.info(
+            "ModelLoader initialized. model_dir=%s device=%s manifest=%s",
+            model_dir, device, self.manifest_path,
+        )
+
+    def _checkpoint_paths(self) -> dict[str, Path]:
+        return {
+            self.autoencoder_ckpt: self.model_dir / self.autoencoder_ckpt,
+            self.neural_operator_ckpt: self.model_dir / self.neural_operator_ckpt,
+            self.diffusion_ckpt: self.model_dir / self.diffusion_ckpt,
+        }
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        hasher = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def compute_checkpoint_hashes(self) -> dict[str, str]:
+        """
+        Compute SHA256 hashes for required checkpoint files.
+
+        Raises:
+            FileNotFoundError: If any checkpoint file is missing.
+        """
+        hashes: dict[str, str] = {}
+        for name, path in self._checkpoint_paths().items():
+            if not path.exists():
+                raise FileNotFoundError(f"Checkpoint file not found: {path}")
+            hashes[name] = self._sha256_file(path)
+        self.checkpoint_hashes = hashes
+        return hashes
+
+    def _read_manifest_hashes(self) -> dict[str, str]:
+        if not self.manifest_path.exists():
+            raise FileNotFoundError(f"Checkpoint manifest not found: {self.manifest_path}")
+
+        data = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Manifest must be a JSON object")
+
+        if isinstance(data.get("files"), dict):
+            raw_files = data["files"]
+        elif isinstance(data.get("checkpoints"), dict):
+            raw_files = data["checkpoints"]
+        else:
+            raw_files = {
+                k: v for k, v in data.items()
+                if k in {self.autoencoder_ckpt, self.neural_operator_ckpt, self.diffusion_ckpt}
+            }
+
+        expected: dict[str, str] = {}
+        for name in self._checkpoint_paths():
+            raw_hash = raw_files.get(name)
+            if not isinstance(raw_hash, str) or not raw_hash.strip():
+                raise ValueError(f"Manifest missing hash for {name}")
+            expected[name] = raw_hash.strip().lower()
+
+        return expected
+
+    def validate_checkpoint_manifest(self) -> bool:
+        """
+        Validate local checkpoint files against the manifest SHA256 hashes.
+
+        Returns:
+            True if manifest exists and all hashes match; False otherwise.
+        """
+        try:
+            expected = self._read_manifest_hashes()
+            actual = self.compute_checkpoint_hashes()
+        except Exception as exc:
+            self.checkpoint_manifest_match = False
+            self.manifest_validation_error = str(exc)
+            logger.error("Checkpoint manifest validation failed: %s", exc)
+            return False
+
+        mismatches: list[str] = []
+        for name, expected_hash in expected.items():
+            actual_hash = actual.get(name, "")
+            if actual_hash != expected_hash:
+                mismatches.append(
+                    f"{name}: expected={expected_hash[:12]}... actual={actual_hash[:12]}..."
+                )
+
+        if mismatches:
+            self.checkpoint_manifest_match = False
+            self.manifest_validation_error = "; ".join(mismatches)
+            logger.error("Checkpoint manifest mismatch: %s", self.manifest_validation_error)
+            return False
+
+        self.checkpoint_manifest_match = True
+        self.manifest_validation_error = None
+        logger.info("Checkpoint manifest validated successfully: %s", self.manifest_path)
+        return True
 
     # ── Internal loader ───────────────────────────────────────────────────
 

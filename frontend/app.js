@@ -28,6 +28,7 @@ const navLinks        = $id('navLinks');
 
 let currentImageB64 = null;
 let outputImageB64  = null;
+let fallbackBanner = null;
 const CONVERT_TO_PNG_TYPES = new Set(['image/avif', 'image/bmp', 'image/tiff']);
 
 // ── Navbar ───────────────────────────────────────────────────────────
@@ -131,6 +132,7 @@ async function runInference() {
     btnText.textContent = 'Processing\u2026';
     btnSpinner.classList.remove('hidden');
     hideError();
+    hideFallbackBanner();
 
     const body = {
         image: currentImageB64,
@@ -192,6 +194,14 @@ function displayResult(data) {
         $id('metaDevice').textContent  = data.metadata.device || '\u2014';
         $id('metaModel').textContent   = 'HNDSR';
         $id('metaFP16').textContent    = data.metadata.fp16 ? 'Yes' : 'No';
+
+        if (data.metadata.inference_mode === 'bicubic_fallback') {
+            showFallbackBanner(data.metadata.fallback_reason);
+        } else {
+            hideFallbackBanner();
+        }
+    } else {
+        hideFallbackBanner();
     }
 
     resultsSection.classList.remove('hidden');
@@ -214,6 +224,43 @@ function showError(msg) {
 }
 function hideError() {
     errorBanner.classList.add('hidden');
+}
+
+function ensureFallbackBanner() {
+    if (fallbackBanner) return fallbackBanner;
+
+    fallbackBanner = document.createElement('div');
+    fallbackBanner.id = 'fallbackBanner';
+    fallbackBanner.classList.add('hidden');
+    fallbackBanner.style.margin = '0 0 1rem 0';
+    fallbackBanner.style.padding = '0.75rem 1rem';
+    fallbackBanner.style.border = '1px solid rgba(255, 179, 0, 0.45)';
+    fallbackBanner.style.borderRadius = '10px';
+    fallbackBanner.style.background = 'rgba(255, 179, 0, 0.12)';
+    fallbackBanner.style.color = '#ffd77a';
+    fallbackBanner.style.fontWeight = '600';
+    fallbackBanner.style.fontSize = '0.95rem';
+
+    const title = resultsSection.querySelector('h3');
+    if (title) {
+        title.insertAdjacentElement('afterend', fallbackBanner);
+    } else {
+        resultsSection.prepend(fallbackBanner);
+    }
+    return fallbackBanner;
+}
+
+function showFallbackBanner(reason) {
+    const banner = ensureFallbackBanner();
+    const reasonText = reason ? ` Reason: ${reason}` : '';
+    banner.textContent = `Model checkpoints were not trusted; serving bicubic fallback.${reasonText}`;
+    banner.classList.remove('hidden');
+}
+
+function hideFallbackBanner() {
+    if (fallbackBanner) {
+        fallbackBanner.classList.add('hidden');
+    }
 }
 
 function sanitizeInteger(rawValue, fallback, min, max) {
