@@ -1,0 +1,7 @@
+{
+  "files": {
+    "autoencoder_best.pth": "399b72b1a83c980c509f7fe682b1d5a2d4d53f70532d6e972bbe74f8f65db32c",
+    "neural_operator_best.pth": "39a70ba09012b07412f6704022ba66867d4b762dfad7bc27fea49447bdeae4f2",
+    "diffusion_best.pth": "24b0582a58cb174a393467a37ff6245ed9e30ec7c6b0eafb1a480c659ed64dd4"
+  }
+}
