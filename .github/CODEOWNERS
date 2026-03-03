@@ -1,0 +1,19 @@
+# Default owners for everything
+*       @The-Harsh-Vardhan
+
+# Backend
+/backend/       @The-Harsh-Vardhan
+/tests/         @The-Harsh-Vardhan
+
+# Training & DVC pipeline
+/dvc_pipeline/  @The-Harsh-Vardhan
+/training/      @The-Harsh-Vardhan
+/MLFlow/        @The-Harsh-Vardhan
+
+# Infrastructure
+/docker/        @The-Harsh-Vardhan
+/observability/ @The-Harsh-Vardhan
+/.github/       @The-Harsh-Vardhan
+
+# Frontend
+/frontend/      @The-Harsh-Vardhan

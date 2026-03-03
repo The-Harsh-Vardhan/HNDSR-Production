@@ -189,7 +189,7 @@ class HealthResponse(BaseModel):
 
 
 class VersionResponse(BaseModel):
-    api_version: str = "1.0.0"
+    api_version: str = "1.1.0"
     model_version: str = "unknown"
     python_version: str
     torch_version: str
@@ -432,7 +432,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="HNDSR Super-Resolution API",
     description="Production API for Hybrid Neural Operator-Diffusion Super-Resolution",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -728,8 +728,8 @@ async def version():
     """API and model version info."""
     import platform
     return VersionResponse(
-        api_version="1.0.0",
-        model_version=os.getenv("MODEL_VERSION", "1.0.0"),
+        api_version="1.1.0",
+        model_version=os.getenv("MODEL_VERSION", "1.1.0"),
         python_version=platform.python_version(),
         torch_version=torch.__version__,
         cuda_available=torch.cuda.is_available(),

@@ -274,7 +274,7 @@ Run super-resolution inference on a base64-encoded image.
   "metadata": {
     "latency_ms": 2340,
     "device": "cuda",
-    "model": "HNDSR-v1.0.0",
+    "model": "HNDSR-v1.1.0",
     "fp16": true,
     "inference_mode": "hndsr"
   }
@@ -330,16 +330,28 @@ All configuration is via **environment variables** (12-factor app):
 ```
 HNDSR-Production/
 ├── .github/
+│   ├── CODEOWNERS               # PR auto-assignment
+│   ├── dependabot.yml           # Automated dependency updates
 │   ├── ISSUE_TEMPLATE/          # Bug report & feature request templates
 │   ├── PULL_REQUEST_TEMPLATE.md
+│   ├── prompts/                 # Copilot prompt files
 │   └── workflows/
 │       ├── code_quality.yml     # Lint (flake8) + pytest + config validation
 │       └── docker_build.yml     # Docker image build with BuildKit caching
 │
 ├── backend/
 │   ├── app.py                   # FastAPI server — endpoints, middleware, metrics
-│   ├── inference_worker.py      # Redis-backed async job worker
-│   └── README.md
+│   ├── api_comparison.md        # API design notes
+│   ├── README.md
+│   ├── inference/               # Inference engine subpackage
+│   │   ├── engine.py            # HNDSRInferenceEngine (DDIM + tiling)
+│   │   ├── model_loader.py      # Singleton model loader with checkpoint validation
+│   │   ├── tile_processor.py    # SatelliteTileProcessor (Hann blending)
+│   │   ├── quality_probe.py     # Startup output quality sanity probe
+│   │   └── generate_checkpoints.py
+│   └── model/                   # Model stub definitions
+│       ├── model_stubs.py
+│       └── model_stubs_old.py
 │
 ├── frontend/
 │   ├── index.html               # Dark-glassmorphism upload UI
@@ -348,20 +360,23 @@ HNDSR-Production/
 │   └── README.md
 │
 ├── training/
-│   ├── HNDSR_Kaggle.ipynb       # Complete training notebook (Kaggle)
+│   ├── HNDSR_Kaggle_Updated.ipynb  # Complete training notebook (Kaggle)
 │   ├── train_pipeline.py        # 3-stage training skeleton
 │   ├── experiment_tracking.py   # MLflow integration wrapper
 │   └── hpo_config.yaml          # Optuna hyperparameter sweep config
 │
 ├── checkpoints/                 # Model weights (~12M params total)
-│   ├── autoencoder_best.pth
-│   ├── neural_operator_best.pth
-│   └── diffusion_best.pth
+│   ├── autoencoder_best.pth     # Stage 1: Latent Autoencoder
+│   ├── neural_operator_best.pth # Stage 2: FNO + ImplicitAmp
+│   ├── diffusion_best.pth       # Stage 3: Diffusion UNet
+│   └── manifest.json            # SHA-256 integrity hashes
 │
 ├── docker/
 │   ├── Dockerfile               # Multi-stage CUDA 12.1 production image
 │   ├── Dockerfile.dev           # Development image with hot-reload
-│   └── docker-compose.yml       # Full stack: API + Frontend + Prometheus + Grafana
+│   ├── docker-compose.yml       # Full stack: API + Frontend + Prometheus + Grafana
+│   ├── docker-compose-monitoring.yml
+│   └── registry_strategy.md
 │
 ├── observability/
 │   ├── prometheus.yml           # Scrape config (15s interval)
@@ -371,43 +386,65 @@ HNDSR-Production/
 │
 ├── data_pipeline/
 │   ├── etl_pipeline.py          # ETL with SHA-256 integrity hashing
-│   └── storage_config.py        # S3/MinIO Pydantic settings
+│   ├── storage_config.py        # S3/MinIO Pydantic settings
+│   └── README.md
 │
 ├── model_registry/
-│   ├── registry_integration.py  # MLflow model registry integration
-│   └── canary_deploy.py         # Canary deployment with traffic splitting
+│   ├── registry_integration.py  # MLflow model registry (dev→staging→production)
+│   └── README.md
 │
-├── dvc_pipeline/
-│   ├── dvc.yaml                 # 5-stage reproducible pipeline
-│   └── params.yaml              # Hyperparameters
+├── dvc_pipeline/                # 🔁 DVC Reproducible Training Pipeline
+│   ├── dvc.yaml                 # 5-stage pipeline definition
+│   ├── params.yaml              # All hyperparameters (DVC-tracked)
+│   ├── README.md
+│   └── src/
+│       ├── dataset.py           # SatelliteDataset (patch-based HR/LR pairs)
+│       ├── models.py            # Full HNDSR architecture (6.3M params)
+│       ├── utils.py             # Seeding, metrics, YAML loading
+│       ├── train_stage.py       # CLI for per-stage training
+│       ├── evaluate.py          # Evaluation with PSNR/SSIM/LPIPS
+│       └── visualize.py         # Before/after SR comparison grids
 │
 ├── MLFlow/                      # 🔬 MLflow Experiment Tracking
 │   ├── HNDSR_MLflow.ipynb       # Full training notebook (47 cells, MLflow-integrated)
-│   ├── autoencoder_best.pth     # Stage 1 best weights (LFS)
-│   ├── neural_operator_best.pth # Stage 2 best weights (LFS)
-│   ├── diffusion_best.pth       # Stage 3 best weights (LFS)
-│   ├── hndsr_complete.pth       # Combined checkpoint (LFS)
+│   ├── autoencoder_best.pth     # Stage 1 best weights
+│   ├── neural_operator_best.pth # Stage 2 best weights
+│   ├── diffusion_best.pth       # Stage 3 best weights
+│   ├── hndsr_complete.pth       # Combined checkpoint
 │   ├── training_curves.png      # Loss curves (all 3 stages)
 │   └── evaluation_results/      # SR comparison images & metrics
 │
 ├── tests/
-│   ├── conftest.py              # Shared fixtures
+│   ├── conftest.py              # Shared fixtures & acceptance thresholds
 │   ├── test_benchmarks.py       # Performance regression tests
+│   ├── test_checkpoint_manifest_validation.py
+│   ├── test_dvc_pipeline.py     # DVC pipeline tests (30 tests)
+│   ├── test_infer.py            # Inference endpoint tests
+│   ├── test_infer_fallback_mode.py
 │   ├── test_inference_consistency.py
+│   ├── test_inference_request_validation.py
 │   ├── test_preprocessing.py
+│   ├── test_quality_probe.py
 │   └── test_shape_validation.py
 │
 ├── docs/
-│   └── PRODUCTION_READINESS_AUDIT.md  # Full production audit report
+│   ├── FULL_SYSTEM_REPORT.md
+│   ├── INTERVIEW_DEFENSE.md
+│   ├── PRODUCTION_MVP.md
+│   ├── PRODUCTION_READINESS_AUDIT.md
+│   └── README.md
 │
-├── Dockerfile                  # Hugging Face Spaces deployment image
-├── architecture.md             # Detailed ASCII architecture diagrams
-├── requirements.txt            # Full dependencies (dev + test + prod)
-├── requirements-prod.txt       # Pinned production-only dependencies
-├── CONTRIBUTING.md             # Contribution guidelines
-├── CODE_OF_CONDUCT.md          # Contributor Covenant
-├── SECURITY.md                 # Security policy & vulnerability reporting
-└── LICENSE                     # MIT License
+├── kubernetes/                  # K8s deployment manifests
+├── performance/                 # Performance benchmarking
+│
+├── Dockerfile                   # Hugging Face Spaces deployment image
+├── architecture.md              # Detailed architecture diagrams
+├── requirements.txt             # Full dependencies (dev + test + prod)
+├── requirements-prod.txt        # Pinned production-only dependencies
+├── CONTRIBUTING.md              # Contribution guidelines
+├── CODE_OF_CONDUCT.md           # Contributor Covenant v2.1
+├── SECURITY.md                  # Security policy & vulnerability reporting
+└── LICENSE                      # MIT License
 ```
 
 ---
@@ -470,7 +507,7 @@ mlflow ui --backend-store-uri MLFlow/mlruns
 # Open http://localhost:5000
 ```
 
-Alternatively, the original Kaggle notebook is at [`training/HNDSR_Kaggle.ipynb`](training/HNDSR_Kaggle.ipynb).
+Alternatively, the original Kaggle notebook is at [`training/HNDSR_Kaggle_Updated.ipynb`](training/HNDSR_Kaggle_Updated.ipynb).
 
 ---
 

@@ -1,77 +1,68 @@
-# HNDSR Hyperparameters — Versioned with DVC
-# ============================================
-# This file is tracked by DVC alongside dvc.yaml.
-# Any change here triggers re-execution of dependent stages.
-#
-# Edit this file → dvc repro → only affected stages rerun.
+# =============================================================================
+# HNDSR DVC Pipeline � Hyperparameters
+# Matched to MLFlow/HNDSR_MLflow.ipynb (v2 bug-fix version)
+# =============================================================================
 
-# ── Global ───────────────────────────────────────────────────────────────────
-global:
-  seed: 42
-  batch_size: 16
-  num_workers: 4
-  device: "auto"  # auto | cuda | cpu
+seed: 42
 
-# ── Data ─────────────────────────────────────────────────────────────────────
+# -- Data ---------------------------------------------------------------------
 data:
-  raw_dir: "../data/raw"
-  processed_dir: "../data/processed"
-  scales: "2 4 6"
-  train_ratio: 0.8
-  val_ratio: 0.1
-  test_ratio: 0.1
-  image_size: 256        # Crop size for training patches
-  augmentation: true
+  hr_dir: "C:\\Users\\harsh\\.cache\\kagglehub\\datasets\\cristobaltudela\\4x-satellite-image-super-resolution\\versions\\1\\HR_0.5m\\HR_0.5m"
+  lr_dir: "C:\\Users\\harsh\\.cache\\kagglehub\\datasets\\cristobaltudela\\4x-satellite-image-super-resolution\\versions\\1\\LR_2m\\LR_2m"
+  patch_size: 64
+  batch_size: 2
+  num_workers: 0
+  val_split: 0.1          # 90 / 10 train-val split
 
-# ── Stage 1: Autoencoder ─────────────────────────────────────────────────────
+# -- Checkpoints --------------------------------------------------------------
+checkpoints:
+  dir: "../checkpoints"   # relative to dvc_pipeline/
+
+# -- Stage 1: Latent Autoencoder ----------------------------------------------
 autoencoder:
-  learning_rate: 1.0e-4
-  epochs: 20
-  loss: "l1"             # l1 | l2 | perceptual
-  weight_decay: 0.0
-  scheduler: "cosine"
-  encoder_channels: 64
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  epochs: 50
   latent_dim: 128
-  n_residual_blocks: 4
+  downsample_ratio: 8
+  num_res_blocks: 4
 
-# ── Stage 2: Neural Operator (FNO) ──────────────────────────────────────────
+# -- Stage 2: Neural Operator (FNO) -------------------------------------------
 neural_operator:
-  learning_rate: 1.0e-4
-  epochs: 15
-  loss: "mse"
-  weight_decay: 1.0e-5
-  scheduler: "cosine"
-  n_modes: 16
-  n_layers: 4
-  hidden_channels: 64
-  fft_precision: "fp32"   # fp32 prevents overflow in frequency domain
-
-# ── Stage 3: Diffusion UNet ─────────────────────────────────────────────────
-diffusion:
-  learning_rate: 2.0e-4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
   epochs: 30
-  loss: "mse"             # Noise prediction MSE
-  weight_decay: 0.0
-  scheduler: "cosine"
-  timesteps: 1000
-  ddim_steps: 50          # Inference acceleration
-  ddim_eta: 0.0           # 0.0 = fully deterministic DDIM
+  modes: 8
+  width: 32
+
+# -- Implicit Amplification (trained jointly with FNO in Stage 2) -------------
+implicit_amp:
+  hidden_dim: 256
+
+# -- Stage 3: Diffusion UNet --------------------------------------------------
+diffusion:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  epochs: 100
+  model_channels: 64
+  num_timesteps: 1000
   beta_start: 1.0e-4
   beta_end: 0.02
-  beta_schedule: "linear"
-  unet_channels: 128
-  attention_resolutions: "8,16"
-  gradient_clip: 1.0      # Prevent training collapse
+  num_inference_steps: 50
+  grad_clip: 1.0
 
-# ── Evaluation ───────────────────────────────────────────────────────────────
-evaluation:
-  metrics:
-    - psnr
-    - ssim
-    - lpips
-  num_test_samples: 100
-  save_visual_samples: true
-  acceptance_thresholds:
-    min_psnr: 26.0
-    min_ssim: 0.75
-    max_lpips: 0.30
+# -- Evaluation ----------------------------------------------------------------
+evaluate:
+  num_test_samples: 50
+  thresholds:
+    min_psnr: 29.0
+    min_ssim: 0.85
+    max_lpips: 0.20
+
+# -- Visualize (before/after comparison images) --------------------------------
+visualize:
+  num_samples: 8
+  output_dir: "visualize_results"
+  diffusion_strength: 0.0
+  grid_cols: 4            # columns in the montage grid
+  save_individual: true   # also save per-sample comparison strips
