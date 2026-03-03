@@ -43,6 +43,7 @@ An enterprise-grade, containerized ML inference engine for continuous-scale sate
 - [Configuration](#%EF%B8%8F-configuration)
 - [Project Structure](#-project-structure)
 - [Training & Reproduction](#-training--reproduction)
+- [MLflow Experiment Tracking](#mlflow-experiment-tracking-recommended)
 - [Observability](#-observability)
 - [Contributing](#-contributing)
 - [Authors](#-authors)
@@ -118,6 +119,8 @@ graph TD
 
 ## 📊 Performance Benchmarks
 
+### SOTA Comparison (Literature Targets)
+
 Evaluated on the **4× Satellite Super-Resolution Dataset**:
 
 | Method | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Parameters |
@@ -125,9 +128,25 @@ Evaluated on the **4× Satellite Super-Resolution Dataset**:
 | Bicubic | 24.53 | 0.71 | 0.35 | — |
 | EDSR | 26.81 | 0.79 | 0.28 | 43M |
 | ESRGAN | 27.14 | 0.81 | 0.24 | 16M |
-| **HNDSR (Ours)** | **29.40** | **0.87** | **0.16** | **~12M** |
+| **HNDSR (Target)** | **29.40** | **0.87** | **0.16** | **~12M** |
 
-**+2.26 dB PSNR** over ESRGAN with **25% fewer parameters**.
+### Measured Results (Local Training — 360 satellite image pairs, RTX 4050 6 GB)
+
+| Version | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| v1: 20+15+30 epochs (broken) | 15.33 ± 3.52 | 0.278 ± 0.131 | 0.596 ± 0.117 | `implicit_amp` untrained, context mismatch |
+| **v3: 50+30+100 epochs (fixed)** | **23.48 ± 3.25** | **0.5700 ± 0.1224** | **0.4809 ± 0.1053** | Bug fixes + SDEdit inference |
+
+### Diffusion Strength Ablation (v3)
+
+| `diffusion_strength` | PSNR ↑ | SSIM ↑ | LPIPS ↓ |
+| :--- | :---: | :---: | :---: |
+| **0.0 (no diffusion)** | **23.19** | **0.5519** | **0.4921** |
+| 0.1 (light SDEdit) | 22.85 | 0.5363 | 0.4812 |
+| 0.3 | 19.74 | 0.4385 | 0.4979 |
+| 1.0 (pure noise) | 13.98 | 0.2212 | 0.6409 |
+
+> The FNO + ImplicitAmp pipeline alone produces the best results. See [`MLFlow/HNDSR_MLflow.ipynb`](MLFlow/HNDSR_MLflow.ipynb) for the full ablation study and MLflow-tracked experiments.
 
 ---
 
@@ -362,6 +381,15 @@ HNDSR-Production/
 │   ├── dvc.yaml                 # 5-stage reproducible pipeline
 │   └── params.yaml              # Hyperparameters
 │
+├── MLFlow/                      # 🔬 MLflow Experiment Tracking
+│   ├── HNDSR_MLflow.ipynb       # Full training notebook (47 cells, MLflow-integrated)
+│   ├── autoencoder_best.pth     # Stage 1 best weights (LFS)
+│   ├── neural_operator_best.pth # Stage 2 best weights (LFS)
+│   ├── diffusion_best.pth       # Stage 3 best weights (LFS)
+│   ├── hndsr_complete.pth       # Combined checkpoint (LFS)
+│   ├── training_curves.png      # Loss curves (all 3 stages)
+│   └── evaluation_results/      # SR comparison images & metrics
+│
 ├── tests/
 │   ├── conftest.py              # Shared fixtures
 │   ├── test_benchmarks.py       # Performance regression tests
@@ -386,40 +414,63 @@ HNDSR-Production/
 
 ## 🔬 Training & Reproduction
 
-The model was trained end-to-end on **Kaggle** using the notebook [`training/HNDSR_Kaggle.ipynb`](training/HNDSR_Kaggle.ipynb).
+### MLflow Experiment Tracking (Recommended)
 
-### Training Pipeline
+The primary training notebook with full MLflow integration is [`MLFlow/HNDSR_MLflow.ipynb`](MLFlow/HNDSR_MLflow.ipynb). It includes:
+
+- **47 cells** with detailed markdown documentation for every function
+- **MLflow auto-logging** of all hyperparameters, per-epoch metrics, and model artifacts
+- **Per-stage diagnostic checks** (PSNR/SSIM after each training stage)
+- **Diffusion strength ablation sweep** with 8 test configurations
+- **Bug fixes** for `ImplicitAmplification` training and diffusion context alignment
+
+### Training Pipeline (v3 — Fixed)
 
 ```
-Stage 1: Autoencoder     →  ~20 epochs  →  L1 + Perceptual Loss    →  Freeze encoder
-Stage 2: Neural Operator  →  ~15 epochs  →  MSE Loss (latent space) →  Freeze FNO
-Stage 3: Diffusion UNet   →  ~30 epochs  →  Noise Prediction Loss   →  Final weights
+Stage 1: Autoencoder       →  50 epochs  →  L1 Loss                →  PSNR ≈ 28.5 dB
+Stage 2: FNO + ImplicitAmp →  30 epochs  →  MSE Loss (latent)      →  PSNR ≈ 22.2 dB (through decode)
+Stage 3: Diffusion UNet    → 100 epochs  →  Noise Prediction Loss   →  PSNR ≈ 23.5 dB (with SDEdit)
 ```
+
+### Bugs Fixed (v1 → v3)
+
+| Bug | Impact | Fix |
+| :--- | :--- | :--- |
+| `ImplicitAmplification` never in any optimizer | Random channel scaling at inference | Jointly trained with FNO in Stage 2 |
+| Diffusion context mismatch (train vs inference) | UNet conditioned on wrong distribution | Aligned context computation in `train_diffusion` |
+| Pure-noise diffusion start | 128-d context insufficient for spatial reconstruction | SDEdit initialization / skip diffusion (strength=0.0) |
 
 ### Key Training Details
 
 | Parameter | Value |
 | :--- | :--- |
-| Dataset | 4× Satellite SR (HR/LR pairs) |
-| Hardware | Kaggle P100 GPU (16 GB VRAM) |
+| Dataset | [4× Satellite SR](https://www.kaggle.com/datasets/cristobaltudela/4x-satellite-image-super-resolution) (360 HR/LR pairs) |
+| Hardware | NVIDIA RTX 4050 (6 GB VRAM), CUDA 12.6 |
 | Optimizer | AdamW (lr=1e-4, weight_decay=1e-5) |
-| Scheduler | CosineAnnealing with warm restarts |
-| EMA | Exponential Moving Average (decay=0.999) |
-| Batch Size | 8 (Stage 1), 4 (Stage 2–3) |
+| Scheduler | CosineAnnealingLR |
+| Batch Size | 2 (all stages) |
+| Total Epochs | 50 + 30 + 100 = 180 |
 | Total Parameters | ~12M across all three stages |
+| Training Time | ~2.1 hours |
+| Experiment Tracking | MLflow (local file store) |
 
 ### Reproduce Locally
 
 ```bash
 # Install training dependencies
 pip install -r requirements.txt
+pip install mlflow kagglehub lpips
 
-# Run the DVC pipeline (if data is available)
-cd dvc_pipeline
-dvc repro
+# Open the MLflow training notebook
+jupyter notebook MLFlow/HNDSR_MLflow.ipynb
+# Run all cells sequentially — dataset downloads automatically via kagglehub
+
+# View MLflow experiment results
+mlflow ui --backend-store-uri MLFlow/mlruns
+# Open http://localhost:5000
 ```
 
-Or open the Kaggle notebook directly and run all cells sequentially.
+Alternatively, the original Kaggle notebook is at [`training/HNDSR_Kaggle.ipynb`](training/HNDSR_Kaggle.ipynb).
 
 ---
 
@@ -491,7 +542,7 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 <div align="center">
 
-**HNDSR v1.0.0-Stable** · Built with PyTorch, FastAPI & Docker
+**HNDSR v1.1.0** · Built with PyTorch, FastAPI, MLflow & Docker
 
 [Live Demo](https://hndsr.vercel.app) · [API Docs](https://the-harsh-vardhan-hndsr-production.hf.space/docs) · [Report Bug](.github/ISSUE_TEMPLATE/bug_report.yml) · [Request Feature](.github/ISSUE_TEMPLATE/feature_request.yml)
 
