@@ -11,7 +11,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Builder ─────────────────────────────────────────────────────
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:13.1.1-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:13.1.1-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
