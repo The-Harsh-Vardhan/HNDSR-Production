@@ -11,6 +11,7 @@ key names and architecture.
 Usage:
     python scripts/run_sr.py                              # defaults
     python scripts/run_sr.py --image path/to/img.png      # custom image
+    python scripts/run_sr.py --checkpoint-dir path/to/ckpts
     python scripts/run_sr.py --scale 4 --steps 50         # custom params
     python scripts/run_sr.py --device cuda                # force GPU
     python scripts/run_sr.py --strength 0.2               # light SDEdit
@@ -501,11 +502,18 @@ def load_model(checkpoint_dir: Path, device: torch.device) -> HNDSR:
     # Stage 2 — Neural Operator (raw OrderedDict, conv0/w0 naming)
     no_path = checkpoint_dir / "neural_operator_best.pth"
     no_raw = torch.load(no_path, map_location="cpu", weights_only=False)
-    no_state = (no_raw.get("model_state_dict", no_raw)
-                if isinstance(no_raw, dict) and "model_state_dict" in no_raw
-                else no_raw)
+    if isinstance(no_raw, dict) and "neural_operator" in no_raw:
+        no_state = no_raw["neural_operator"]
+    elif isinstance(no_raw, dict) and "model_state_dict" in no_raw:
+        no_state = no_raw["model_state_dict"]
+    else:
+        no_state = no_raw
     model.neural_operator.load_state_dict(no_state, strict=True)
     print(f"  [OK] NeuralOp      <- {no_path.name}")
+
+    if isinstance(no_raw, dict) and "implicit_amp" in no_raw:
+        model.implicit_amp.load_state_dict(no_raw["implicit_amp"], strict=True)
+        print(f"  [OK] ImplicitAmp   <- {no_path.name}")
 
     # Stage 3 — Diffusion UNet (dict with 'diffusion_unet' key)
     diff_path = checkpoint_dir / "diffusion_best.pth"
@@ -587,6 +595,9 @@ def main():
         default=str(PROJECT_ROOT / "tests" / "Sample Images"
                     / "HG_Satellite_LoRes_Pic1_TerraColor.avif"),
         help="Path to LR input image")
+    parser.add_argument("--checkpoint-dir", type=str,
+                        default=str(PROJECT_ROOT / "checkpoints"),
+                        help="Directory containing HNDSR checkpoint files")
     parser.add_argument("--scale", type=float, default=4.0)
     parser.add_argument("--steps", type=int, default=50,
                         help="DDIM sampling steps")
@@ -615,6 +626,7 @@ def main():
     print(f"  HNDSR Super-Resolution Inference")
     print(f"{'='*60}")
     print(f"  Image    : {Path(args.image).name}")
+    print(f"  Ckpt dir : {Path(args.checkpoint_dir)}")
     print(f"  Scale    : {args.scale}x")
     print(f"  Steps    : {args.steps}")
     print(f"  Strength : {args.strength}")
@@ -625,7 +637,7 @@ def main():
 
     # 1 — Load model
     print("[1/4] Loading HNDSR model...")
-    model = load_model(PROJECT_ROOT / "checkpoints", device)
+    model = load_model(Path(args.checkpoint_dir), device)
 
     # 2 — Load image
     print(f"\n[2/4] Loading image...")
