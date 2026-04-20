@@ -14,7 +14,7 @@ python-multipart==0.0.6
 # MLOps / Engineering
 mlflow==2.10.0
 dvc==3.38.1
-prometheus-client==0.19.0
+prometheus-client==0.24.1
 
 # Quality / Testing
 pytest==7.4.4
