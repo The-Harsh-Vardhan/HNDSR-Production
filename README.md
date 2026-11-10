@@ -29,6 +29,8 @@ An enterprise-grade, containerized ML inference engine for continuous-scale sate
 
 </div>
 
+> **Results at a glance (measured):** best local run (v3, 360 satellite image pairs, RTX 4050 6 GB) reaches **PSNR 23.48 dB, SSIM 0.570, LPIPS 0.481**. The 29.40 dB / 0.87 figures in the benchmark table are the paper *target*, not achieved results. See [Performance Benchmarks](#-performance-benchmarks).
+
 ---
 
 ## Table of Contents
@@ -120,6 +122,8 @@ graph TD
 ## 📊 Performance Benchmarks
 
 ### SOTA Comparison (Literature Targets)
+
+> The **HNDSR (Target)** row is the goal from the paper, not a measured result. Measured results are in the next table.
 
 Evaluated on the **4× Satellite Super-Resolution Dataset**:
 
